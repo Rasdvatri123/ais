@@ -1,19 +1,21 @@
 import json
+import logging
 import threading
 from flask import Flask, jsonify, render_template, request
 from flask_cors import CORS
 import websocket
 
+# Включаем логирование в консоль Render
+logging.basicConfig(level=logging.INFO)
+
 app = Flask(__name__)
 CORS(app)
 
-# Хранилище данных о судах
 vessels_data = {}
 target_vessels = []
 
-# ==========================================
-# 1. ГЛАВНЫЙ МАРШРУТ (Отдает ваш index.html)
-# ==========================================
+# ⚠️ ВСТАВЬТЕ СЮДА ВАШ КЛЮЧ ИЗ AISSTREAM.IO
+AISSTREAM_API_KEY = "b833e22c3f4002f8f9a95b533a66433dd7463512"
 
 
 @app.route("/")
@@ -21,16 +23,12 @@ def index():
   return render_template("index.html")
 
 
-# ==========================================
-# 2. МАРШРУТЫ API
-# ==========================================
-
-
 @app.route("/api/set_vessels", methods=["POST"])
 def set_vessels():
   global target_vessels
   data = request.json
   target_vessels = [v.lower() for v in data.get("vessels", [])]
+  logging.info(f"Обновлен список отслеживания: {target_vessels}")
   return jsonify({"status": "success", "tracking": target_vessels})
 
 
@@ -39,13 +37,15 @@ def get_vessels():
   return jsonify(list(vessels_data.values()))
 
 
-# ==========================================
-# 3. ФОНОВЫЙ ПОТОК ДЛЯ AISSTREAM
-# ==========================================
-
-
 def ais_worker():
-  api_key = "b833e22c3f4002f8f9a95b553a66433dd7463512"  # Укажите ваш API Key
+  if (
+      not AISSTREAM_API_KEY
+      or AISSTREAM_API_KEY == "ВСТАВЬТЕ_ВАШ_КЛЮЧ_СЮДА"
+  ):
+    logging.error(
+        "ОШИБКА: API-ключ AISStream не установлен! Вставьте ключ в server.py"
+    )
+    return
 
   def on_message(ws, message):
     try:
@@ -55,7 +55,7 @@ def ais_worker():
         meta = msg.get("MetaData", {})
         ship_name = meta.get("ShipName", "").strip()
 
-        if any(v in ship_name.lower() for v in target_vessels):
+        if ship_name and any(v in ship_name.lower() for v in target_vessels):
           mmsi = pos["UserID"]
           vessels_data[mmsi] = {
               "mmsi": mmsi,
@@ -67,25 +67,43 @@ def ais_worker():
               "status": meta.get("NavigationalStatus", "Неизвестно"),
               "destination": meta.get("Destination", "Не указано"),
           }
+          logging.info(
+              f"Найдено судно: {ship_name} ({pos['Latitude']}, {pos['Longitude']})"
+          )
     except Exception as e:
-      print("Ошибка обработки сообщения:", e)
+      logging.error(f"Ошибка парсинга сообщения: {e}")
 
   def on_open(ws):
+    logging.info("Успешное подключение к WebSocket AISStream!")
     subscribe_msg = {
-        "APIKey": api_key,
+        "APIKey": AISSTREAM_API_KEY,
         "BoundingBoxes": [[[-90, -180], [90, 180]]],
     }
     ws.send(json.dumps(subscribe_msg))
 
-  ws = websocket.WebSocketApp(
-      "wss://stream.aisstream.io/v0/stream",
-      on_open=on_open,
-      on_message=on_message,
-  )
-  ws.run_forever()
+  def on_error(ws, error):
+    logging.error(f"Ошибка WebSocket AISStream: {error}")
+
+  def on_close(ws, close_status_code, close_msg):
+    logging.warning("Соединение AISStream закрыто. Переподключение...")
+
+  while True:
+    try:
+      ws = websocket.WebSocketApp(
+          "wss://stream.aisstream.io/v0/stream",
+          on_open=on_open,
+          on_message=on_message,
+          on_error=on_error,
+          on_close=on_close,
+      )
+      ws.run_forever()
+    except Exception as e:
+      logging.error(f"Сбой цикла WebSocket: {e}")
 
 
-threading.Thread(target=ais_worker, daemon=True).start()
+# Запуск фонового потока AIS
+thread = threading.Thread(target=ais_worker, daemon=True)
+thread.start()
 
 if __name__ == "__main__":
   app.run(host="0.0.0.0", port=5000)
