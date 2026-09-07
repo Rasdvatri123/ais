@@ -7,6 +7,7 @@ from flask import Flask, jsonify, render_template, request
 from flask_cors import CORS
 import websockets
 
+# Настройка логирования
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
@@ -17,23 +18,20 @@ CORS(app)
 vessels_data = {}
 target_vessels = []
 
-# Исправленные BoundingBoxes по стандарту AISStream: [[Lat_Min, Lon_Min], [Lat_Max, Lon_Max]]
+# Корректный двумерный массив координат BoundingBoxes [[[South, West], [North, East]]]
 BOUNDING_BOXES = {
     # Европа и Северная Атлантика
     "europe": [[[30.0, -10.0], [65.0, 40.0]]],
-    # Глобальное покрытие (2 зоны для исключения ошибок валидации)
-    "world": [
-        [[-90.0, -180.0], [90.0, 0.0]],
-        [[-90.0, 0.0], [90.0, 180.0]],
-    ],
+    # Весь мир (один валидный прямоугольник)
+    "world": [[[-90.0, -180.0], [90.0, 180.0]]],
 }
 
 current_region = "europe"
 ws_connection = None
 
-# Считываем ключ из переменных окружения или берем значение по умолчанию
+# Новый валидный API Key
 AISSTREAM_API_KEY = os.environ.get(
-    "AISSTREAM_API_KEY", "b833e22c3f4002f8f9a95b533a66433dd7463512"
+    "AISSTREAM_API_KEY", "8a2e1e9248eb6650a5d5e16db825de0cc74281e0"
 ).strip()
 
 
@@ -56,6 +54,7 @@ def set_vessels():
 
   logging.info(f"Обновлен трекинг: {target_vessels}, Район: {current_region}")
 
+  # Переподключаемся к AISStream при изменении региона
   if region_changed and ws_connection:
     asyncio.run_coroutine_threadsafe(ws_connection.close(), async_loop)
 
@@ -74,9 +73,11 @@ async def ais_stream_loop():
   while True:
     try:
       logging.info(
-          f"Попытка подключения к AISStream с ключом: {AISSTREAM_API_KEY[:6]}..."
+          f"Попытка подключения к AISStream с ключом:"
+          f" {AISSTREAM_API_KEY[:8]}..."
       )
 
+      # Подключение без сжатия (compression=None) против обрывов 1006
       async with websockets.connect(
           url, ping_interval=20, ping_timeout=20, compression=None
       ) as websocket:
@@ -101,6 +102,7 @@ async def ais_stream_loop():
           try:
             msg = json.loads(message)
 
+            # Проверка входящих сообщений об ошибках
             if "error" in msg or "Error" in msg:
               logging.error(f"AISStream вернул ошибку: {msg}")
               continue
@@ -110,7 +112,7 @@ async def ais_stream_loop():
               meta = msg.get("MetaData", {})
               ship_name = meta.get("ShipName", "").strip()
 
-              # Если список отслеживаемых судов пуст — собираем все суда из входящего потока
+              # Если список отслеживаемых судов пуст — собираем все входящие суда
               if not target_vessels or any(
                   v in ship_name.lower() for v in target_vessels
               ):
@@ -128,6 +130,7 @@ async def ais_stream_loop():
                 logging.info(
                     f"Данные обновлены: {ship_name or mmsi} ({pos['Latitude']}, {pos['Longitude']})"
                 )
+
           except Exception as parse_err:
             logging.debug(f"Ошибка разбора пакета: {parse_err}")
 
@@ -135,10 +138,10 @@ async def ais_stream_loop():
       logging.error(
           f"Сервер закрыл соединение. Код: {e.code}, Причина: '{e.reason}'"
       )
-      await asyncio.sleep(10)
+      await asyncio.sleep(5)
     except Exception as e:
-      logging.error(f"Сбой подключения: {e}. Повтор через 10 сек...")
-      await asyncio.sleep(10)
+      logging.error(f"Сбой подключения: {e}. Повтор через 5 сек...")
+      await asyncio.sleep(5)
 
 
 def start_async_loop():
@@ -148,9 +151,10 @@ def start_async_loop():
   async_loop.run_until_complete(ais_stream_loop())
 
 
-# Запуск асинхронного потока в фоновом режиме
+# Запуск асинхронного цикла WebSocket в отдельном потоке
 thread = threading.Thread(target=start_async_loop, daemon=True)
 thread.start()
 
 if __name__ == "__main__":
-  app.run(host="0.0.0.0", port=5000)
+  port = int(os.environ.get("PORT", 5000))
+  app.run(host="0.0.0.0", port=port)
