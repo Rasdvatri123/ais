@@ -18,18 +18,17 @@ CORS(app)
 vessels_data = {}
 target_vessels = []
 
-# Корректный двумерный массив координат BoundingBoxes [[[South, West], [North, East]]]
+# Расширенные координаты BoundingBoxes [[[South, West], [North, East]]]
 BOUNDING_BOXES = {
-    # Европа и Северная Атлантика
-    "europe": [[[30.0, -10.0], [65.0, 40.0]]],
-    # Весь мир (один валидный прямоугольник)
+    # Расширенная Европа (от Канарских островов до Севера Норвегии и Чёрного моря)
+    "europe": [[[25.0, -25.0], [72.0, 45.0]]],
+    # Весь мир
     "world": [[[-90.0, -180.0], [90.0, 180.0]]],
 }
 
 current_region = "europe"
 ws_connection = None
 
-# Новый валидный API Key
 AISSTREAM_API_KEY = os.environ.get(
     "AISSTREAM_API_KEY", "8a2e1e9248eb6650a5d5e16db825de0cc74281e0"
 ).strip()
@@ -44,18 +43,22 @@ def index():
 def set_vessels():
   global target_vessels, current_region, ws_connection
   data = request.json or {}
+
+  # Очищаем ввод: сохраняем названия и MMSI
   target_vessels = [
-      v.lower().strip() for v in data.get("vessels", []) if v.strip()
+      str(v).lower().strip() for v in data.get("vessels", []) if str(v).strip()
   ]
 
   new_region = data.get("region", "europe")
   region_changed = new_region != current_region
   current_region = new_region
 
-  logging.info(f"Обновлен трекинг: {target_vessels}, Район: {current_region}")
+  logging.info(
+      f"Обновлен фильтр поиска: {target_vessels}, Район: {current_region}"
+  )
 
-  # Переподключаемся к AISStream при изменении региона
-  if region_changed and ws_connection:
+  # Переподключаем WebSocket при смене региона
+  if region_changed and ws_connection and async_loop:
     asyncio.run_coroutine_threadsafe(ws_connection.close(), async_loop)
 
   return jsonify({"status": "success", "tracking": target_vessels})
@@ -73,18 +76,15 @@ async def ais_stream_loop():
   while True:
     try:
       logging.info(
-          f"Попытка подключения к AISStream с ключом:"
-          f" {AISSTREAM_API_KEY[:8]}..."
+          f"Подключение к AISStream (Ключ: {AISSTREAM_API_KEY[:8]}...)..."
       )
 
-      # Подключение без сжатия (compression=None) против обрывов 1006
       async with websockets.connect(
           url, ping_interval=20, ping_timeout=20, compression=None
       ) as websocket:
         ws_connection = websocket
         logging.info(
-            f"Соединение установлено. Отправка подписки на район:"
-            f" {current_region}..."
+            f"Соединение установлено. Подписка на район: {current_region}"
         )
 
         subscribe_msg = {
@@ -92,55 +92,101 @@ async def ais_stream_loop():
             "BoundingBoxes": BOUNDING_BOXES.get(
                 current_region, BOUNDING_BOXES["europe"]
             ),
-            "FilterMessageTypes": ["PositionReport"],
+            # Подписываемся на координаты И статические данные судна (имя/дестинация)
+            "FilterMessageTypes": ["PositionReport", "ShipStaticData"],
         }
 
         await websocket.send(json.dumps(subscribe_msg))
-        logging.info("Подписка успешно отправлена в AISStream.")
+        logging.info("Подписка отправлена.")
 
         async for message in websocket:
           try:
             msg = json.loads(message)
 
-            # Проверка входящих сообщений об ошибках
             if "error" in msg or "Error" in msg:
-              logging.error(f"AISStream вернул ошибку: {msg}")
+              logging.error(f"Ошибка от AISStream: {msg}")
               continue
 
-            if msg.get("MessageType") == "PositionReport":
-              pos = msg["Message"]["PositionReport"]
-              meta = msg.get("MetaData", {})
-              ship_name = meta.get("ShipName", "").strip()
+            msg_type = msg.get("MessageType")
+            meta = msg.get("MetaData", {})
+            mmsi = str(meta.get("MMSI") or msg.get("Message", {}).get(msg_type, {}).get("UserID", ""))
 
-              # Если список отслеживаемых судов пуст — собираем все входящие суда
-              if not target_vessels or any(
-                  v in ship_name.lower() for v in target_vessels
-              ):
-                mmsi = pos["UserID"]
+            if not mmsi:
+              continue
+
+            ship_name = meta.get("ShipName", "").strip()
+
+            # Проверка совпадений: проверяем и по MMSI, и по Nazvaniyu
+            is_match = not target_vessels or any(
+                v == mmsi or (ship_name and v in ship_name.lower())
+                for v in target_vessels
+            )
+
+            if is_match:
+              if msg_type == "PositionReport":
+                pos = msg["Message"]["PositionReport"]
+                lat = pos["Latitude"]
+                lon = pos["Longitude"]
+
+                # Не сохраняем некорректные координаты
+                if lat == 181 or lon == 181:
+                  continue
+
+                existing = vessels_data.get(mmsi, {})
                 vessels_data[mmsi] = {
                     "mmsi": mmsi,
-                    "name": ship_name or f"MMSI: {mmsi}",
-                    "lat": pos["Latitude"],
-                    "lon": pos["Longitude"],
-                    "speed": pos.get("Sog", 0),
-                    "course": pos.get("Cog", 0),
-                    "status": meta.get("NavigationalStatus", "Неизвестно"),
-                    "destination": meta.get("Destination", "Не указано"),
+                    "name": ship_name or existing.get("name") or f"MMSI: {mmsi}",
+                    "lat": lat,
+                    "lon": lon,
+                    "speed": pos.get("Sog", existing.get("speed", 0)),
+                    "course": pos.get("Cog", existing.get("course", 0)),
+                    "status": meta.get(
+                        "NavigationalStatus",
+                        existing.get("status", "Неизвестно"),
+                    ),
+                    "destination": meta.get(
+                        "Destination",
+                        existing.get("destination", "Не указано"),
+                    ),
                 }
                 logging.info(
-                    f"Данные обновлены: {ship_name or mmsi} ({pos['Latitude']}, {pos['Longitude']})"
+                    f"Обновлена позиция: {vessels_data[mmsi]['name']} ({mmsi}) -> [{lat}, {lon}]"
+                )
+
+              elif msg_type == "ShipStaticData":
+                static = msg["Message"]["ShipStaticData"]
+                new_name = static.get("Name", "").strip() or ship_name
+
+                if mmsi in vessels_data:
+                  if new_name:
+                    vessels_data[mmsi]["name"] = new_name
+                  vessels_data[mmsi]["destination"] = static.get(
+                      "Destination", vessels_data[mmsi]["destination"]
+                  )
+                elif is_match:
+                  # Сохраняем имя заранее, даже если позиция ещё не пришла
+                  vessels_data[mmsi] = {
+                      "mmsi": mmsi,
+                      "name": new_name or f"MMSI: {mmsi}",
+                      "lat": None,
+                      "lon": None,
+                      "speed": 0,
+                      "course": 0,
+                      "status": "Ожидание позиционирования",
+                      "destination": static.get("Destination", "Не указано"),
+                  }
+                logging.info(
+                    f"Обновлены данные судна: {new_name or mmsi} ({mmsi})"
                 )
 
           except Exception as parse_err:
-            logging.debug(f"Ошибка разбора пакета: {parse_err}")
+            logging.debug(f"Ошибка разбора сообщения: {parse_err}")
 
     except websockets.exceptions.ConnectionClosedError as e:
-      logging.error(
-          f"Сервер закрыл соединение. Код: {e.code}, Причина: '{e.reason}'"
-      )
+      logging.error(f"Соединение закрыто (Код: {e.code}). Переподключение через 5 сек...")
       await asyncio.sleep(5)
     except Exception as e:
-      logging.error(f"Сбой подключения: {e}. Повтор через 5 сек...")
+      logging.error(f"Ошибка сокета: {e}. Переподключение через 5 сек...")
       await asyncio.sleep(5)
 
 
@@ -151,7 +197,6 @@ def start_async_loop():
   async_loop.run_until_complete(ais_stream_loop())
 
 
-# Запуск асинхронного цикла WebSocket в отдельном потоке
 thread = threading.Thread(target=start_async_loop, daemon=True)
 thread.start()
 
