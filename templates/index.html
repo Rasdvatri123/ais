@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Мониторинг судов (AIS)</title>
 
-    <!-- Leaflet CSS для отображения карты -->
+    <!-- Leaflet CSS -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 
     <style>
@@ -16,59 +16,130 @@
         }
         body, html {
             height: 100%;
-            font-family: Arial, sans-serif;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             display: flex;
             flex-direction: column;
+            background-color: #0f172a;
+            color: #f8fafc;
         }
         #controls {
-            padding: 12px 20px;
-            background-color: #1f2937;
-            color: #ffffff;
+            padding: 12px 16px;
+            background-color: #1e293b;
             display: flex;
+            flex-direction: column;
             gap: 10px;
-            align-items: center;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
             z-index: 1000;
+        }
+        .input-row {
+            display: flex;
+            gap: 8px;
+            align-items: center;
         }
         input[type="text"] {
             flex: 1;
-            padding: 8px 12px;
-            border-radius: 4px;
-            border: 1px solid #374151;
-            background-color: #374151;
+            padding: 10px 14px;
+            border-radius: 6px;
+            border: 1px solid #334155;
+            background-color: #0f172a;
             color: #fff;
             font-size: 14px;
+            outline: none;
+        }
+        input[type="text"]:focus {
+            border-color: #3b82f6;
         }
         button {
-            padding: 8px 16px;
+            padding: 10px 14px;
             background-color: #2563eb;
             color: white;
             border: none;
-            border-radius: 4px;
+            border-radius: 6px;
             cursor: pointer;
             font-size: 14px;
-            font-weight: bold;
+            font-weight: 600;
+            transition: background-color 0.2s;
+            white-space: nowrap;
         }
         button:hover {
             background-color: #1d4ed8;
         }
+        button.btn-add {
+            background-color: #059669;
+        }
+        button.btn-add:hover {
+            background-color: #047857;
+        }
+        button.btn-fav-all {
+            background-color: #d97706;
+            font-size: 12px;
+            padding: 4px 8px;
+        }
+        button.btn-fav-all:hover {
+            background-color: #b45309;
+        }
+
+        /* Список Избранного */
+        #favorites-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            font-size: 13px;
+        }
+        .fav-title {
+            color: #94a3b8;
+            font-weight: bold;
+        }
+        .fav-chip {
+            background-color: #334155;
+            padding: 4px 10px;
+            border-radius: 16px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        .fav-chip:hover {
+            background-color: #475569;
+        }
+        .fav-chip .remove-btn {
+            color: #ef4444;
+            font-weight: bold;
+            cursor: pointer;
+            padding: 0 2px;
+        }
+        .fav-chip .remove-btn:hover {
+            color: #f87171;
+        }
+
+        #status {
+            font-size: 12px;
+            color: #38bdf8;
+        }
         #map {
             flex: 1;
             width: 100%;
-        }
-        #status {
-            font-size: 12px;
-            color: #9ca3af;
-            margin-left: 10px;
         }
     </style>
 </head>
 <body>
 
     <div id="controls">
-        <input type="text" id="vesselInput" placeholder="Введите названия судов через запятую (например: Arklow, Maersk)">
-        <button onclick="updateVessels()">Отслеживать</button>
-        <span id="status">Ожидание ввода...</span>
+        <div class="input-row">
+            <input type="text" id="vesselInput" placeholder="Введите название судна (например: Arklow)">
+            <button onclick="trackCurrentInput()">Отслеживать</button>
+            <button class="btn-add" onclick="addCurrentToFavorites()">+ В избранное</button>
+        </div>
+
+        <div id="favorites-container">
+            <span class="fav-title">⭐ Избранное:</span>
+            <div id="favorites-list" style="display: flex; gap: 6px; flex-wrap: wrap;"></div>
+            <button class="btn-fav-all" onclick="trackAllFavorites()">Отследить все</button>
+        </div>
+
+        <div id="status">Статус: Ожидание ввода...</div>
     </div>
 
     <div id="map"></div>
@@ -77,44 +148,101 @@
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
     <script>
-        // Инициализация карты (центр мира, зум 3)
         const map = L.map('map').setView([20, 0], 3);
 
-        // Подключение тайлов карты OpenStreetMap
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '&copy; OpenStreetMap contributors'
         }).addTo(map);
 
-        // Объект для хранения маркеров судов { mmsi: marker }
         const markers = {};
+        let favorites = JSON.parse(localStorage.getItem('ais_favorites') || '[]');
 
-        // Функция отправки списка отслеживаемых судов на сервер
-        async function updateVessels() {
-            const input = document.getElementById('vesselInput').value;
-            const vessels = input.split(',').map(v => v.trim()).filter(v => v.length > 0);
+        // Отрисовка списка избранных судов
+        function renderFavorites() {
+            const listEl = document.getElementById('favorites-list');
+            listEl.innerHTML = '';
+
+            if (favorites.length === 0) {
+                listEl.innerHTML = '<span style="color: #64748b; font-size: 12px;">Пусто</span>';
+                return;
+            }
+
+            favorites.forEach((vessel, index) => {
+                const chip = document.createElement('div');
+                chip.className = 'fav-chip';
+                chip.innerHTML = `
+                    <span onclick="trackVessel('${vessel}')">${vessel}</span>
+                    <span class="remove-btn" onclick="removeFavorite(${index})">&times;</span>
+                `;
+                listEl.appendChild(chip);
+            });
+        }
+
+        // Сохранение в LocalStorage
+        function saveFavorites() {
+            localStorage.setItem('ais_favorites', JSON.stringify(favorites));
+            renderFavorites();
+        }
+
+        // Добавление текущего ввода в избранное
+        function addCurrentToFavorites() {
+            const val = document.getElementById('vesselInput').value.trim();
+            if (val && !favorites.includes(val)) {
+                favorites.push(val);
+                saveFavorites();
+            }
+        }
+
+        // Удаление из избранного
+        function removeFavorite(index) {
+            favorites.splice(index, 1);
+            saveFavorites();
+        }
+
+        // Отправка запроса на сервер
+        async function sendTrackRequest(vesselsArray) {
             const statusEl = document.getElementById('status');
-
             statusEl.innerText = "Обновление списка...";
 
             try {
                 const res = await fetch('/api/set_vessels', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ vessels: vessels })
+                    body: JSON.stringify({ vessels: vesselsArray })
                 });
 
                 if (res.ok) {
-                    statusEl.innerText = `Отслеживаются: ${vessels.join(', ') || 'нет'}`;
+                    statusEl.innerText = `Статус: Отслеживаются [ ${vesselsArray.join(', ') || 'ничего'} ]`;
                 } else {
-                    statusEl.innerText = "Ошибка при обновлении списка";
+                    statusEl.innerText = "Ошибка сервера при обновлении списка";
                 }
             } catch (err) {
-                console.error("Ошибка запроса:", err);
-                statusEl.innerText = "Ошибка соединения с сервером";
+                console.error(err);
+                statusEl.innerText = "Ошибка соединения";
             }
         }
 
-        // Функция получения текущих координат судов с сервера
+        // Отследить то, что введено в инпуте
+        function trackCurrentInput() {
+            const input = document.getElementById('vesselInput').value;
+            const list = input.split(',').map(v => v.trim()).filter(v => v.length > 0);
+            sendTrackRequest(list);
+        }
+
+        // Отследить конкретное судно из избранного
+        function trackVessel(name) {
+            document.getElementById('vesselInput').value = name;
+            sendTrackRequest([name]);
+        }
+
+        // Отследить сразу все из избранного
+        function trackAllFavorites() {
+            if (favorites.length > 0) {
+                sendTrackRequest(favorites);
+            }
+        }
+
+        // Получение координат судов каждые 5 секунд
         async function fetchData() {
             try {
                 const res = await fetch('/api/vessels');
@@ -124,31 +252,32 @@
 
                 vessels.forEach(ship => {
                     const popupContent = `
-                        <b>${ship.name || 'Неизвестно'}</b><br>
-                        MMSI: ${ship.mmsi}<br>
-                        Скорость: ${ship.speed} узл.<br>
-                        Курс: ${ship.course}°<br>
-                        Статус: ${ship.status}<br>
-                        Назначение: ${ship.destination}
+                        <div style="color: #000;">
+                            <b>${ship.name || 'Неизвестно'}</b><br>
+                            MMSI: ${ship.mmsi}<br>
+                            Скорость: ${ship.speed} узл.<br>
+                            Курс: ${ship.course}°<br>
+                            Статус: ${ship.status}<br>
+                            Назначение: ${ship.destination}
+                        </div>
                     `;
 
                     if (markers[ship.mmsi]) {
-                        // Обновляем позицию существующего маркера
                         markers[ship.mmsi].setLatLng([ship.lat, ship.lon]);
                         markers[ship.mmsi].getPopup().setContent(popupContent);
                     } else {
-                        // Создаем новый маркер
                         markers[ship.mmsi] = L.marker([ship.lat, ship.lon])
                             .addTo(map)
                             .bindPopup(popupContent);
                     }
                 });
             } catch (err) {
-                console.error("Ошибка получения данных судов:", err);
+                console.error("Ошибка обновления данных:", err);
             }
         }
 
-        // Запрашивать обновления с сервера каждые 5 секунд
+        // Инициализация при загрузке
+        renderFavorites();
         setInterval(fetchData, 5000);
         fetchData();
     </script>
