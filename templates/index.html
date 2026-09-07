@@ -2,305 +2,155 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>Мониторинг судов AIS с Треком</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Мониторинг судов (AIS)</title>
+
+    <!-- Leaflet CSS для отображения карты -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
     <style>
-        body { margin: 0; padding: 0; font-family: Arial, sans-serif; display: flex; height: 100vh; }
-        #sidebar { width: 360px; padding: 20px; box-sizing: border-box; background: #f8f9fa; border-right: 1px solid #ccc; display: flex; flex-direction: column; }
-        #map { flex-grow: 1; height: 100%; }
-        
-        /* Блок добавления в избранное */
-        .add-fav-block { display: flex; gap: 6px; margin-bottom: 12px; }
-        .add-fav-block input { flex-grow: 1; padding: 8px; border: 1px solid #ccc; border-radius: 4px; }
-        .add-fav-block button { width: auto; padding: 8px 12px; background: #28a745; color: white; border: none; font-size: 13px; white-space: nowrap; border-radius: 4px; cursor: pointer; }
-        .add-fav-block button:hover { background: #218838; }
-
-        /* Выпадающий список Favorite Ships */
-        details { background: #fff; border: 1px solid #ccc; border-radius: 4px; margin-bottom: 12px; }
-        summary { font-weight: bold; padding: 8px 12px; cursor: pointer; background: #e9ecef; user-select: none; border-radius: 4px; }
-        .favorites-content { padding: 10px; max-height: 180px; overflow-y: auto; }
-        .fav-controls { display: flex; gap: 8px; margin-bottom: 8px; }
-        .fav-controls button { padding: 4px 8px; font-size: 11px; background: #6c757d; color: white; border: none; border-radius: 3px; width: auto; font-weight: normal; cursor: pointer; }
-        .fav-controls button:hover { background: #5a6268; }
-        
-        .fav-item { display: flex; align-items: center; justify-content: space-between; font-size: 13px; margin-bottom: 6px; }
-        .fav-item-label { display: flex; align-items: center; gap: 8px; cursor: pointer; flex-grow: 1; text-transform: uppercase; }
-        .btn-delete { background: none; border: none; color: #dc3545; cursor: pointer; font-weight: bold; padding: 0 4px; font-size: 14px; width: auto; }
-        .btn-delete:hover { color: #a71d2a; background: none; }
-
-        textarea { width: 100%; height: 60px; margin-bottom: 10px; padding: 8px; box-sizing: border-box; font-family: monospace; resize: vertical; }
-        
-        .btn-actions { display: flex; gap: 8px; margin-bottom: 10px; }
-        .btn-main { flex-grow: 1; padding: 10px; background: #007bff; color: white; border: none; cursor: pointer; border-radius: 4px; font-weight: bold; }
-        .btn-main:hover { background: #0056b3; }
-        .btn-clear-tracks { padding: 10px; background: #ffc107; color: #212529; border: none; cursor: pointer; border-radius: 4px; font-weight: bold; }
-        .btn-clear-tracks:hover { background: #e0a800; }
-        
-        .ship-list { margin-top: 10px; flex-grow: 1; overflow-y: auto; }
-        .ship-item { background: white; padding: 10px; margin-bottom: 8px; border-radius: 4px; border: 1px solid #ddd; cursor: pointer; line-height: 1.3; }
-        .ship-item:hover { background: #eef; }
-        
-        .badge { display: inline-block; padding: 2px 6px; font-size: 10px; font-weight: bold; border-radius: 3px; background: #e0e0e0; margin-top: 4px; }
-        .badge-anchor { background: #ffe399; color: #856404; }
-        .badge-underway { background: #d4edda; color: #155724; }
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body, html {
+            height: 100%;
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+        }
+        #controls {
+            padding: 12px 20px;
+            background-color: #1f2937;
+            color: #ffffff;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            z-index: 1000;
+        }
+        input[type="text"] {
+            flex: 1;
+            padding: 8px 12px;
+            border-radius: 4px;
+            border: 1px solid #374151;
+            background-color: #374151;
+            color: #fff;
+            font-size: 14px;
+        }
+        button {
+            padding: 8px 16px;
+            background-color: #2563eb;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: bold;
+        }
+        button:hover {
+            background-color: #1d4ed8;
+        }
+        #map {
+            flex: 1;
+            width: 100%;
+        }
+        #status {
+            font-size: 12px;
+            color: #9ca3af;
+            margin-left: 10px;
+        }
     </style>
 </head>
 <body>
 
-<div id="sidebar">
-    <h2>AIS Мониторинг</h2>
-
-    <!-- Поле быстрого добавления в Избранное -->
-    <div class="add-fav-block">
-        <input type="text" id="newFavInput" placeholder="Название судна..." onkeydown="if(event.key==='Enter') addFavoriteShip()">
-        <button type="button" onclick="addFavoriteShip()">+ В Избранное</button>
+    <div id="controls">
+        <input type="text" id="vesselInput" placeholder="Введите названия судов через запятую (например: Arklow, Maersk)">
+        <button onclick="updateVessels()">Отслеживать</button>
+        <span id="status">Ожидание ввода...</span>
     </div>
 
-    <!-- Выпадающий список Favorite Ships -->
-    <details open>
-        <summary>⭐ Favorite Ships (<span id="favCount">0</span>)</summary>
-        <div class="favorites-content">
-            <div class="fav-controls">
-                <button type="button" onclick="selectAllFavs(true)">Выбрать все</button>
-                <button type="button" onclick="selectAllFavs(false)">Снять все</button>
-            </div>
-            <div id="favList"></div>
-        </div>
-    </details>
+    <div id="map"></div>
 
-    <label for="vesselInput">Разовый поиск (по одного на строку):</label>
-    <textarea id="vesselInput" placeholder="arklow ace&#10;arklow arrow"></textarea>
-    
-    <div class="btn-actions">
-        <button class="btn-main" onclick="updateVessels()">Отслеживать</button>
-        <button class="btn-clear-tracks" onclick="clearTracks()" title="Стереть нарисованные треки">Сбросить треки</button>
-    </div>
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
-    <h3>Найденные суда:</h3>
-    <div id="shipList" class="ship-list"></div>
-</div>
+    <script>
+        // Инициализация карты (центр мира, зум 3)
+        const map = L.map('map').setView([20, 0], 3);
 
-<div id="map"></div>
+        // Подключение тайлов карты OpenStreetMap
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; OpenStreetMap contributors'
+        }).addTo(map);
 
-<script>
-    const defaultShips = ["arklow ace", "arklow accord", "arklow artist", "arklow arrow", "arklow manor", "arklow muse"];
+        // Объект для хранения маркеров судов { mmsi: marker }
+        const markers = {};
 
-    function getStoredFavoriteShips() {
-        const stored = localStorage.getItem('favorite_ships_list');
-        if (stored) return JSON.parse(stored);
-        localStorage.setItem('favorite_ships_list', JSON.stringify(defaultShips));
-        return defaultShips;
-    }
+        // Функция отправки списка отслеживаемых судов на сервер
+        async function updateVessels() {
+            const input = document.getElementById('vesselInput').value;
+            const vessels = input.split(',').map(v => v.trim()).filter(v => v.length > 0);
+            const statusEl = document.getElementById('status');
 
-    let favoriteShipsList = getStoredFavoriteShips();
+            statusEl.innerText = "Обновление списка...";
 
-    const map = L.map('map').setView([45.0, 30.0], 4);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '&copy; OpenStreetMap'
-    }).addTo(map);
+            try {
+                const res = await fetch('/api/set_vessels', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ vessels: vessels })
+                });
 
-    // Объект маркеров судов
-    const markers = {};
-    
-    // Объект хранения координат и объектов линий (Polyline)
-    // Хранится в виде: vesselTracks[mmsi] = { points: [[lat, lon], ...], polyline: L.polyline }
-    const vesselTracks = {};
-
-    function renderFavoriteShips() {
-        const favContainer = document.getElementById('favList');
-        favContainer.innerHTML = '';
-
-        favoriteShipsList.sort((a, b) => a.localeCompare(b));
-        document.getElementById('favCount').innerText = favoriteShipsList.length;
-
-        const savedState = JSON.parse(localStorage.getItem('fav_ships_state') || '{}');
-
-        favoriteShipsList.forEach(shipName => {
-            const isChecked = savedState[shipName] !== undefined ? savedState[shipName] : true;
-
-            const itemDiv = document.createElement('div');
-            itemDiv.className = 'fav-item';
-
-            const label = document.createElement('label');
-            label.className = 'fav-item-label';
-            
-            const checkbox = document.createElement('input');
-            checkbox.type = 'checkbox';
-            checkbox.value = shipName;
-            checkbox.checked = isChecked;
-            checkbox.className = 'fav-checkbox';
-            checkbox.onchange = saveFavsState;
-
-            label.appendChild(checkbox);
-            label.appendChild(document.createTextNode(shipName));
-
-            const delBtn = document.createElement('button');
-            delBtn.className = 'btn-delete';
-            delBtn.innerHTML = '&#10005;';
-            delBtn.title = 'Удалить из избранного';
-            delBtn.onclick = (e) => {
-                e.stopPropagation();
-                removeFavoriteShip(shipName);
-            };
-
-            itemDiv.appendChild(label);
-            itemDiv.appendChild(delBtn);
-            favContainer.appendChild(itemDiv);
-        });
-    }
-
-    function addFavoriteShip() {
-        const input = document.getElementById('newFavInput');
-        const name = input.value.trim().toLowerCase();
-        if (!name) return;
-
-        if (!favoriteShipsList.includes(name)) {
-            favoriteShipsList.push(name);
-            localStorage.setItem('favorite_ships_list', JSON.stringify(favoriteShipsList));
-            
-            const savedState = JSON.parse(localStorage.getItem('fav_ships_state') || '{}');
-            savedState[name] = true;
-            localStorage.setItem('fav_ships_state', JSON.stringify(savedState));
-
-            renderFavoriteShips();
-            input.value = '';
-        } else {
-            alert('Это судно уже есть в списке!');
-        }
-    }
-
-    function removeFavoriteShip(shipName) {
-        favoriteShipsList = favoriteShipsList.filter(name => name !== shipName);
-        localStorage.setItem('favorite_ships_list', JSON.stringify(favoriteShipsList));
-        
-        const savedState = JSON.parse(localStorage.getItem('fav_ships_state') || '{}');
-        delete savedState[shipName];
-        localStorage.setItem('fav_ships_state', JSON.stringify(savedState));
-
-        renderFavoriteShips();
-    }
-
-    function saveFavsState() {
-        const state = {};
-        document.querySelectorAll('.fav-checkbox').forEach(cb => {
-            state[cb.value] = cb.checked;
-        });
-        localStorage.setItem('fav_ships_state', JSON.stringify(state));
-    }
-
-    function selectAllFavs(select) {
-        document.querySelectorAll('.fav-checkbox').forEach(cb => {
-            cb.checked = select;
-        });
-        saveFavsState();
-    }
-
-    // Очистка всех прорисованных треков
-    function clearTracks() {
-        Object.keys(vesselTracks).forEach(mmsi => {
-            if (vesselTracks[mmsi].polyline) {
-                map.removeLayer(vesselTracks[mmsi].polyline);
+                if (res.ok) {
+                    statusEl.innerText = `Отслеживаются: ${vessels.join(', ') || 'нет'}`;
+                } else {
+                    statusEl.innerText = "Ошибка при обновлении списка";
+                }
+            } catch (err) {
+                console.error("Ошибка запроса:", err);
+                statusEl.innerText = "Ошибка соединения с сервером";
             }
-        });
-        // Очищаем историю координат
-        for (let mmsi in vesselTracks) delete vesselTracks[mmsi];
-    }
-
-    async function updateVessels() {
-        const selectedFavs = [];
-        document.querySelectorAll('.fav-checkbox:checked').forEach(cb => {
-            selectedFavs.push(cb.value);
-        });
-
-        const textInput = document.getElementById('vesselInput').value;
-        const extraVessels = textInput.split('\n').filter(name => name.trim() !== '');
-
-        const allVessels = Array.from(new Set([...selectedFavs, ...extraVessels]));
-
-        await fetch('http://127.0.0.1:5000/api/set_vessels', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ vessels: allVessels })
-        });
-        
-        fetchData();
-    }
-
-    async function fetchData() {
-        try {
-            const res = await fetch('http://127.0.0.1:5000/api/vessels');
-            const data = await res.json();
-            
-            const listDiv = document.getElementById('shipList');
-            listDiv.innerHTML = '';
-
-            data.forEach(ship => {
-                const { mmsi, name, lat, lon, speed, course, status, destination } = ship;
-                const currentLatLng = [lat, lon];
-
-                // === ПРОРИСОВКА ТРЕКА ===
-                if (!vesselTracks[mmsi]) {
-                    // Инициализация структуры для нового судна
-                    vesselTracks[mmsi] = {
-                        points: [currentLatLng],
-                        polyline: L.polyline([currentLatLng], {
-                            color: '#0056b3',  // Синий цвет линии
-                            weight: 3,         // Толщина линии
-                            opacity: 0.8,      // Прозрачность
-                            dashArray: '4, 4'  // Пунктирная линия (можно убрать для сплошной)
-                        }).addTo(map)
-                    };
-                } else {
-                    // Если судно сместилось, добавляем новую точку в трек
-                    const lastPoint = vesselTracks[mmsi].points[vesselTracks[mmsi].points.length - 1];
-                    if (lastPoint[0] !== lat || lastPoint[1] !== lon) {
-                        vesselTracks[mmsi].points.push(currentLatLng);
-                        vesselTracks[mmsi].polyline.setLatLngs(vesselTracks[mmsi].points);
-                    }
-                }
-
-                // Обновление или создание маркера судна
-                if (markers[mmsi]) {
-                    markers[mmsi].setLatLng(currentLatLng);
-                } else {
-                    markers[mmsi] = L.marker(currentLatLng).addTo(map);
-                }
-
-                markers[mmsi].bindPopup(`
-                    <b>${name}</b><br>
-                    <b>MMSI:</b> ${mmsi}<br>
-                    <b>Статус:</b> ${status}<br>
-                    <b>Назначение:</b> ${destination}<br>
-                    <b>Скорость:</b> ${speed} kn | <b>Курс:</b> ${course}°
-                `);
-
-                let badgeClass = 'badge';
-                if (status.includes('якоре')) badgeClass += ' badge-anchor';
-                if (status.includes('ходу')) badgeClass += ' badge-underway';
-
-                const item = document.createElement('div');
-                item.className = 'ship-item';
-                item.innerHTML = `
-                    <b>${name}</b><br>
-                    <small><b>Порт:</b> ${destination}</small><br>
-                    <small><b>Скорость:</b> ${speed} kn</small><br>
-                    <span class="${badgeClass}">${status}</span>
-                `;
-                item.onclick = () => {
-                    map.setView(currentLatLng, 10);
-                    markers[mmsi].openPopup();
-                };
-                listDiv.appendChild(item);
-            });
-        } catch (e) {
-            console.error("Ошибка получения данных:", e);
         }
-    }
 
-    renderFavoriteShips();
-    setInterval(fetchData, 3000);
-</script>
+        // Функция получения текущих координат судов с сервера
+        async function fetchData() {
+            try {
+                const res = await fetch('/api/vessels');
+                if (!res.ok) return;
 
+                const vessels = await res.json();
+
+                vessels.forEach(ship => {
+                    const popupContent = `
+                        <b>${ship.name || 'Неизвестно'}</b><br>
+                        MMSI: ${ship.mmsi}<br>
+                        Скорость: ${ship.speed} узл.<br>
+                        Курс: ${ship.course}°<br>
+                        Статус: ${ship.status}<br>
+                        Назначение: ${ship.destination}
+                    `;
+
+                    if (markers[ship.mmsi]) {
+                        // Обновляем позицию существующего маркера
+                        markers[ship.mmsi].setLatLng([ship.lat, ship.lon]);
+                        markers[ship.mmsi].getPopup().setContent(popupContent);
+                    } else {
+                        // Создаем новый маркер
+                        markers[ship.mmsi] = L.marker([ship.lat, ship.lon])
+                            .addTo(map)
+                            .bindPopup(popupContent);
+                    }
+                });
+            } catch (err) {
+                console.error("Ошибка получения данных судов:", err);
+            }
+        }
+
+        // Запрашивать обновления с сервера каждые 5 секунд
+        setInterval(fetchData, 5000);
+        fetchData();
+    </script>
 </body>
 </html>
