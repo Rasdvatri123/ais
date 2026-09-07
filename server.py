@@ -1,9 +1,31 @@
 import json
 import threading
-import time
-import websocket
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, render_template, request  # <-- Проверьте render_template
 from flask_cors import CORS
+import websocket
+
+app = Flask(__name__)
+CORS(app)
+
+# 1. ГЛАВНЫЙ МАРШРУТ (Отдает страницу с картой)
+
+
+@app.route("/")
+def index():
+  return render_template("index.html")
+
+
+# 2. МАРШРУТЫ API
+@app.route("/api/set_vessels", methods=["POST"])
+def set_vessels():
+  # ваш существующий код
+  ...
+
+
+@app.route("/api/vessels", methods=["GET"])
+def get_vessels():
+  # ваш существующий код
+  ...
 
 API_KEY = "b833e22c3f4002f8f9a95b553a66433dd7463512"  # Укажите ваш API Key
 
