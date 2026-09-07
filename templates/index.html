@@ -4,124 +4,25 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Мониторинг судов (AIS)</title>
-
-    <!-- Leaflet CSS -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-
     <style>
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
-        body, html {
-            height: 100%;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            display: flex;
-            flex-direction: column;
-            background-color: #0f172a;
-            color: #f8fafc;
-        }
-        #controls {
-            padding: 12px 16px;
-            background-color: #1e293b;
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
-            z-index: 1000;
-        }
-        .input-row {
-            display: flex;
-            gap: 8px;
-            align-items: center;
-        }
-        input[type="text"] {
-            flex: 1;
-            padding: 10px 14px;
-            border-radius: 6px;
-            border: 1px solid #334155;
-            background-color: #0f172a;
-            color: #fff;
-            font-size: 14px;
-            outline: none;
-        }
-        input[type="text"]:focus {
-            border-color: #3b82f6;
-        }
-        button {
-            padding: 10px 14px;
-            background-color: #2563eb;
-            color: white;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 14px;
-            font-weight: 600;
-            transition: background-color 0.2s;
-            white-space: nowrap;
-        }
-        button:hover {
-            background-color: #1d4ed8;
-        }
-        button.btn-add {
-            background-color: #059669;
-        }
-        button.btn-add:hover {
-            background-color: #047857;
-        }
-        button.btn-fav-all {
-            background-color: #d97706;
-            font-size: 12px;
-            padding: 4px 8px;
-        }
-        button.btn-fav-all:hover {
-            background-color: #b45309;
-        }
-
-        /* Список Избранного */
-        #favorites-container {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            flex-wrap: wrap;
-            font-size: 13px;
-        }
-        .fav-title {
-            color: #94a3b8;
-            font-weight: bold;
-        }
-        .fav-chip {
-            background-color: #334155;
-            padding: 4px 10px;
-            border-radius: 16px;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            cursor: pointer;
-            transition: background-color 0.2s;
-        }
-        .fav-chip:hover {
-            background-color: #475569;
-        }
-        .fav-chip .remove-btn {
-            color: #ef4444;
-            font-weight: bold;
-            cursor: pointer;
-            padding: 0 2px;
-        }
-        .fav-chip .remove-btn:hover {
-            color: #f87171;
-        }
-
-        #status {
-            font-size: 12px;
-            color: #38bdf8;
-        }
-        #map {
-            flex: 1;
-            width: 100%;
-        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body, html { height: 100%; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; display: flex; flex-direction: column; background-color: #0f172a; color: #f8fafc; }
+        #controls { padding: 12px 16px; background-color: #1e293b; display: flex; flex-direction: column; gap: 10px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3); z-index: 1000; }
+        .input-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+        input[type="text"] { flex: 2; min-width: 200px; padding: 10px 14px; border-radius: 6px; border: 1px solid #334155; background-color: #0f172a; color: #fff; font-size: 14px; outline: none; }
+        select { flex: 1; min-width: 180px; padding: 10px 14px; border-radius: 6px; border: 1px solid #334155; background-color: #0f172a; color: #fff; font-size: 14px; outline: none; cursor: pointer; }
+        button { padding: 10px 14px; background-color: #2563eb; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600; transition: background-color 0.2s; white-space: nowrap; }
+        button:hover { background-color: #1d4ed8; }
+        button.btn-add { background-color: #059669; }
+        button.btn-add:hover { background-color: #047857; }
+        button.btn-fav-all { background-color: #d97706; font-size: 12px; padding: 4px 8px; }
+        #favorites-container { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+        .fav-title { color: #94a3b8; font-weight: bold; }
+        .fav-chip { background-color: #334155; padding: 4px 10px; border-radius: 16px; display: flex; align-items: center; gap: 6px; cursor: pointer; }
+        .fav-chip .remove-btn { color: #ef4444; font-weight: bold; padding: 0 2px; }
+        #status { font-size: 12px; color: #38bdf8; }
+        #map { flex: 1; width: 100%; }
     </style>
 </head>
 <body>
@@ -129,6 +30,10 @@
     <div id="controls">
         <div class="input-row">
             <input type="text" id="vesselInput" placeholder="Введите название судна (например: Arklow)">
+            <select id="regionSelect">
+                <option value="europe" selected>🇪🇺 Европа (Марокко - Шпицберген)</option>
+                <option value="world">🌐 Весь мир</option>
+            </select>
             <button onclick="trackCurrentInput()">Отслеживать</button>
             <button class="btn-add" onclick="addCurrentToFavorites()">+ В избранное</button>
         </div>
@@ -144,11 +49,9 @@
 
     <div id="map"></div>
 
-    <!-- Leaflet JS -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-
     <script>
-        const map = L.map('map').setView([20, 0], 3);
+        const map = L.map('map').setView([50, 10], 4);
 
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '&copy; OpenStreetMap contributors'
@@ -157,16 +60,13 @@
         const markers = {};
         let favorites = JSON.parse(localStorage.getItem('ais_favorites') || '[]');
 
-        // Отрисовка списка избранных судов
         function renderFavorites() {
             const listEl = document.getElementById('favorites-list');
             listEl.innerHTML = '';
-
             if (favorites.length === 0) {
                 listEl.innerHTML = '<span style="color: #64748b; font-size: 12px;">Пусто</span>';
                 return;
             }
-
             favorites.forEach((vessel, index) => {
                 const chip = document.createElement('div');
                 chip.className = 'fav-chip';
@@ -178,13 +78,11 @@
             });
         }
 
-        // Сохранение в LocalStorage
         function saveFavorites() {
             localStorage.setItem('ais_favorites', JSON.stringify(favorites));
             renderFavorites();
         }
 
-        // Добавление текущего ввода в избранное
         function addCurrentToFavorites() {
             const val = document.getElementById('vesselInput').value.trim();
             if (val && !favorites.includes(val)) {
@@ -193,61 +91,54 @@
             }
         }
 
-        // Удаление из избранного
         function removeFavorite(index) {
             favorites.splice(index, 1);
             saveFavorites();
         }
 
-        // Отправка запроса на сервер
         async function sendTrackRequest(vesselsArray) {
             const statusEl = document.getElementById('status');
-            statusEl.innerText = "Обновление списка...";
+            const region = document.getElementById('regionSelect').value;
+            statusEl.innerText = "Обновление параметров...";
 
             try {
                 const res = await fetch('/api/set_vessels', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ vessels: vesselsArray })
+                    body: JSON.stringify({ vessels: vesselsArray, region: region })
                 });
 
                 if (res.ok) {
-                    statusEl.innerText = `Статус: Отслеживаются [ ${vesselsArray.join(', ') || 'ничего'} ]`;
+                    statusEl.innerText = `Статус: Отслеживаются [ ${vesselsArray.join(', ') || 'ничего'} ] | Район: ${region === 'europe' ? 'Европа' : 'Весь мир'}`;
                 } else {
-                    statusEl.innerText = "Ошибка сервера при обновлении списка";
+                    statusEl.innerText = "Ошибка обновления данных на сервере";
                 }
             } catch (err) {
-                console.error(err);
                 statusEl.innerText = "Ошибка соединения";
             }
         }
 
-        // Отследить то, что введено в инпуте
         function trackCurrentInput() {
             const input = document.getElementById('vesselInput').value;
             const list = input.split(',').map(v => v.trim()).filter(v => v.length > 0);
             sendTrackRequest(list);
         }
 
-        // Отследить конкретное судно из избранного
         function trackVessel(name) {
             document.getElementById('vesselInput').value = name;
             sendTrackRequest([name]);
         }
 
-        // Отследить сразу все из избранного
         function trackAllFavorites() {
             if (favorites.length > 0) {
                 sendTrackRequest(favorites);
             }
         }
 
-        // Получение координат судов каждые 5 секунд
         async function fetchData() {
             try {
                 const res = await fetch('/api/vessels');
                 if (!res.ok) return;
-
                 const vessels = await res.json();
 
                 vessels.forEach(ship => {
@@ -272,11 +163,10 @@
                     }
                 });
             } catch (err) {
-                console.error("Ошибка обновления данных:", err);
+                console.error("Ошибка получения координат:", err);
             }
         }
 
-        // Инициализация при загрузке
         renderFavorites();
         setInterval(fetchData, 5000);
         fetchData();
