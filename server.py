@@ -1,10 +1,10 @@
+import asyncio
 import json
 import logging
 import threading
-import time
 from flask import Flask, jsonify, render_template, request
 from flask_cors import CORS
-import websocket
+import websockets
 
 logging.basicConfig(level=logging.INFO)
 
@@ -36,69 +36,68 @@ def get_vessels():
   return jsonify(list(vessels_data.values()))
 
 
-def ais_worker():
-  def on_message(ws, message):
-    try:
-      msg = json.loads(message)
-      if msg.get("MessageType") == "PositionReport":
-        pos = msg["Message"]["PositionReport"]
-        meta = msg.get("MetaData", {})
-        ship_name = meta.get("ShipName", "").strip()
-
-        if ship_name and any(v in ship_name.lower() for v in target_vessels):
-          mmsi = pos["UserID"]
-          vessels_data[mmsi] = {
-              "mmsi": mmsi,
-              "name": ship_name,
-              "lat": pos["Latitude"],
-              "lon": pos["Longitude"],
-              "speed": pos.get("Sog", 0),
-              "course": pos.get("Cog", 0),
-              "status": meta.get("NavigationalStatus", "Неизвестно"),
-              "destination": meta.get("Destination", "Не указано"),
-          }
-          logging.info(
-              f"Найдено судно: {ship_name} ({pos['Latitude']},"
-              f" {pos['Longitude']})"
-          )
-    except Exception as e:
-      pass
-
-  def on_open(ws):
-    logging.info("Успешное подключение к WebSocket AISStream!")
-    # Отправляем оптимизированный запрос подписки
-    subscribe_msg = {
-        "APIKey": AISSTREAM_API_KEY,
-        "BoundingBoxes": [[[-90, -180], [90, 180]]],
-        "FilterMessageTypes": ["PositionReport"],  # Фильтруем только координаты
-    }
-    ws.send(json.dumps(subscribe_msg))
-
-  def on_error(ws, error):
-    logging.error(f"Ошибка WebSocket: {error}")
-
-  def on_close(ws, close_status_code, close_msg):
-    logging.warning("Соединение AISStream закрыто. Переподключение через 3с...")
+async def ais_stream_loop():
+  url = "wss://stream.aisstream.io/v0/stream"
 
   while True:
     try:
-      ws = websocket.WebSocketApp(
-          "wss://stream.aisstream.io/v0/stream",
-          on_open=on_open,
-          on_message=on_message,
-          on_error=on_error,
-          on_close=on_close,
-      )
-      # Добавлен ping_interval=20 для поддержания живого соединения
-      ws.run_forever(ping_interval=20, ping_timeout=10)
+      # Настраиваем максимальный размер сообщения и увеличенные таймауты
+      async with websockets.connect(
+          url, ping_interval=20, ping_timeout=20, max_size=None
+      ) as websocket:
+        logging.info("Успешное асинхронное подключение к AISStream!")
+
+        # Попробуем зону с частым трафиком или весь мир
+        subscribe_msg = {
+            "APIKey": AISSTREAM_API_KEY,
+            "BoundingBoxes": [[[-90, -180], [90, 180]]],
+            "FilterMessageTypes": ["PositionReport"],
+        }
+
+        await websocket.send(json.dumps(subscribe_msg))
+
+        async for message in websocket:
+          try:
+            msg = json.loads(message)
+            if msg.get("MessageType") == "PositionReport":
+              pos = msg["Message"]["PositionReport"]
+              meta = msg.get("MetaData", {})
+              ship_name = meta.get("ShipName", "").strip()
+
+              if ship_name and any(
+                  v in ship_name.lower() for v in target_vessels
+              ):
+                mmsi = pos["UserID"]
+                vessels_data[mmsi] = {
+                    "mmsi": mmsi,
+                    "name": ship_name,
+                    "lat": pos["Latitude"],
+                    "lon": pos["Longitude"],
+                    "speed": pos.get("Sog", 0),
+                    "course": pos.get("Cog", 0),
+                    "status": meta.get("NavigationalStatus", "Неизвестно"),
+                    "destination": meta.get("Destination", "Не указано"),
+                }
+                logging.info(
+                    f"Найдено судно: {ship_name} ({pos['Latitude']},"
+                    f" {pos['Longitude']})"
+                )
+          except Exception:
+            pass
+
     except Exception as e:
-      logging.error(f"Сбой цикла WebSocket: {e}")
+      logging.error(f"Ошибка соединения WebSocket: {e}. Переподключение...")
+      await asyncio.sleep(5)
 
-    time.sleep(3)
+
+def start_async_loop():
+  loop = asyncio.new_event_loop()
+  asyncio.set_event_loop(loop)
+  loop.run_until_complete(ais_stream_loop())
 
 
-# Запуск фонового потока AIS
-thread = threading.Thread(target=ais_worker, daemon=True)
+# Запускаем асинхронный поток
+thread = threading.Thread(target=start_async_loop, daemon=True)
 thread.start()
 
 if __name__ == "__main__":
