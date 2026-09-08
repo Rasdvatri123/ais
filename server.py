@@ -33,8 +33,7 @@ AISSTREAM_API_KEY = os.environ.get(
 
 
 def fetch_fallback_vessel(query):
-  """Мгновенный точечный поиск судна через публичный REST API,"""
-  """если его нет в активном потоке WebSocket."""
+  """Мгновенный поиск судна через публичный REST API, если его нет в активном потоке WebSocket."""
   try:
     url = f"https://www.myshiptracking.com/requests_vessel.php?type=search&term={query}"
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -45,7 +44,7 @@ def fetch_fallback_vessel(query):
         item = data[0]
         mmsi = str(item.get("mmsi") or item.get("id", ""))
         if mmsi:
-          vessels_data[mmsi] = {
+          vessel_info = {
               "mmsi": mmsi,
               "name": item.get("name", f"MMSI: {mmsi}"),
               "lat": float(item.get("lat", 0)),
@@ -55,11 +54,11 @@ def fetch_fallback_vessel(query):
               "status": "Из базы (Кэш)",
               "destination": item.get("dest", "Не указано"),
           }
+          vessels_data[mmsi] = vessel_info
           logging.info(
-              f"Мгновенный точечный поиск нашел: {vessels_data[mmsi]['name']}"
-              f" [{mmsi}]"
+              f"Мгновенный поиск нашел судно: {vessel_info['name']} [{mmsi}]"
           )
-          return vessels_data[mmsi]
+          return vessel_info
   except Exception as e:
     logging.debug(f"Ошибка точечного запроса: {e}")
   return None
@@ -75,28 +74,39 @@ def set_vessels():
   global target_vessels, current_region, ws_connection
   data = request.json or {}
 
+  raw_vessels = data.get("vessels", [])
+  if isinstance(raw_vessels, str):
+    raw_vessels = raw_vessels.split(",")
+
   target_vessels = [
-      str(v).lower().strip() for v in data.get("vessels", []) if str(v).strip()
+      str(v).lower().strip() for v in raw_vessels if str(v).strip()
   ]
 
   new_region = data.get("region", "europe")
   region_changed = new_region != current_region
   current_region = new_region
 
-  # Выполняем быстрый фоновый поиск для судов, которых еще нет в кеше
+  # Точечный мгновенный поиск для введенных судов
   for item in target_vessels:
-    if not any(
-        v["mmsi"] == item or item in v["name"].lower()
-        for v in vessels_data.values()
-    ):
-      threading.Thread(
-          target=fetch_fallback_vessel, args=(item,), daemon=True
-      ).start()
+    existing = next(
+        (
+            v
+            for v in vessels_data.values()
+            if v["mmsi"] == item or item in v["name"].lower()
+        ),
+        None,
+    )
+    if not existing:
+      fetch_fallback_vessel(item)
 
   if region_changed and ws_connection and async_loop:
     asyncio.run_coroutine_threadsafe(ws_connection.close(), async_loop)
 
-  return jsonify({"status": "success", "tracking": target_vessels})
+  return jsonify({
+      "status": "success",
+      "tracking": target_vessels,
+      "vessels": list(vessels_data.values()),
+  })
 
 
 @app.route("/api/vessels", methods=["GET"])
