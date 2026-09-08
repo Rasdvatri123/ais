@@ -3,123 +3,154 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AIS Vessel Monitoring</title>
+    <title>AIS Vessel Tracker & Map</title>
+    <!-- Подключаем стили карты Leaflet -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 20px; background-color: #f8f9fa; color: #212529; }
-        .container { max-width: 900px; margin: 0 auto; }
-        .card { background: #ffffff; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin-bottom: 20px; }
-        h1, h2 { margin-top: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 15px; background: #f4f6f8; }
+        .layout { display: flex; flex-direction: column; gap: 15px; max-width: 1200px; margin: 0 auto; }
+        .card { background: #fff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+        #map { height: 400px; width: 100%; border-radius: 8px; }
         .search-form { display: flex; gap: 10px; margin-top: 10px; }
-        input[type="text"] { flex: 1; padding: 12px; border: 1px solid #ced4da; border-radius: 6px; font-size: 16px; }
-        button { padding: 12px 20px; background-color: #0d6efd; color: white; border: none; border-radius: 6px; font-size: 16px; cursor: pointer; }
-        button:hover { background-color: #0b5ed7; }
-        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
-        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #dee2e6; }
-        th { background-color: #f1f3f5; font-weight: 600; }
-        .badge-online { background: #d1e7dd; color: #0f5132; padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 14px; }
-        .badge-waiting { background: #fff3cd; color: #664d03; padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 14px; }
-        .result-box { margin-top: 15px; padding: 15px; background: #e9ecef; border-radius: 6px; font-family: monospace; white-space: pre-wrap; word-break: break-all; }
+        input[type="text"] { flex: 1; padding: 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 15px; }
+        button { padding: 10px 18px; background: #007bff; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; }
+        button:hover { background: #0056b3; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #eee; }
+        th { background: #f8f9fa; }
+        .status-online { color: #28a745; font-weight: bold; }
+        .status-waiting { color: #fd7e14; font-weight: bold; }
+        .result-box { margin-top: 10px; padding: 10px; background: #e9ecef; border-radius: 6px; font-family: monospace; white-space: pre-wrap; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <!-- Поиск судна -->
-        <div class="card">
-            <h2>Поиск судна по MMSI</h2>
-            <div class="search-form">
-                <input type="text" id="mmsiInput" placeholder="Введите MMSI">
-                <button onclick="searchVessel()">Найти</button>
-            </div>
-            <div id="searchResult"></div>
-        </div>
 
-        <!-- Таблица Мониторинга -->
-        <div class="card">
-            <h2>Избранные суда (Мониторинг 24/7)</h2>
-            <table>
-                <thead>
-                    <tr>
-                        <th>MMSI</th>
-                        <th>Статус</th>
-                        <th>Широта (Lat)</th>
-                        <th>Долгота (Lon)</th>
-                        <th>Скорость (SOG)</th>
-                        <th>Курс (COG)</th>
-                    </tr>
-                </thead>
-                <tbody id="favoritesTable">
-                    <tr><td colspan="6">Подключение к серверу...</td></tr>
-                </tbody>
-            </table>
+<div class="layout">
+    <!-- Поисковая строка -->
+    <div class="card">
+        <h2>Поиск судна по MMSI</h2>
+        <div class="search-form">
+            <input type="text" id="mmsiInput" placeholder="Введите MMSI (например, 220338000)">
+            <button onclick="searchVessel()">Найти</button>
         </div>
+        <div id="searchResult"></div>
     </div>
 
-    <script>
-        const API_BASE_URL = "https://ais-le31.onrender.com";
+    <!-- Интерактивная карта -->
+    <div class="card">
+        <h2>Карта судов (Realtime)</h2>
+        <div id="map"></div>
+    </div>
 
-        async function updateFavorites() {
-            try {
-                const response = await fetch(`${API_BASE_URL}/favorites`);
-                const data = await response.json();
+    <!-- Таблица Избранных -->
+    <div class="card">
+        <h2>Избранные суда</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>MMSI</th>
+                    <th>Статус</th>
+                    <th>Широта</th>
+                    <th>Долгота</th>
+                    <th>Скорость (SOG)</th>
+                    <th>Курс (COG)</th>
+                </tr>
+            </thead>
+            <tbody id="favoritesTable">
+                <tr><td colspan="6">Загрузка данных...</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Скрипт карты Leaflet -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+    const API_BASE_URL = "https://ais-le31.onrender.com";
+
+    // Инициализация карты (центр по умолчанию)
+    const map = L.map('map').setView([54.0, 10.0], 5);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap'
+    }).addTo(map);
+
+    const markers = {};
+
+    async function fetchFavorites() {
+        try {
+            const res = await fetch(`${API_BASE_URL}/favorites`);
+            const data = await res.json();
+            
+            const tbody = document.getElementById('favoritesTable');
+            tbody.innerHTML = '';
+
+            data.forEach(item => {
+                const row = document.createElement('tr');
                 
-                const tbody = document.getElementById('favoritesTable');
-                tbody.innerHTML = '';
+                if (item.status === 'online' && item.data) {
+                    const { lat, lon, sog, cog, mmsi } = item.data;
 
-                data.forEach(item => {
-                    const row = document.createElement('tr');
-                    
-                    if (item.status === 'online' && item.data) {
-                        row.innerHTML = `
-                            <td><b>${item.mmsi}</b></td>
-                            <td><span class="badge-online">ONLINE</span></td>
-                            <td>${item.data.lat}</td>
-                            <td>${item.data.lon}</td>
-                            <td>${item.data.sog} kn</td>
-                            <td>${item.data.cog}°</td>
-                        `;
+                    row.innerHTML = `
+                        <td><b>${mmsi}</b></td>
+                        <td class="status-online">ONLINE</td>
+                        <td>${lat}</td>
+                        <td>${lon}</td>
+                        <td>${sog} kn</td>
+                        <td>${cog}°</td>
+                    `;
+
+                    // Обновляем маркер на карте
+                    if (markers[mmsi]) {
+                        markers[mmsi].setLatLng([lat, lon]);
                     } else {
-                        row.innerHTML = `
-                            <td><b>${item.mmsi}</b></td>
-                            <td><span class="badge-waiting">WAITING</span></td>
-                            <td>—</td>
-                            <td>—</td>
-                            <td>—</td>
-                            <td>—</td>
-                        `;
+                        markers[mmsi] = L.marker([lat, lon]).addTo(map)
+                            .bindPopup(`<b>MMSI: ${mmsi}</b><br>Скорость: ${sog} kn<br>Курс: ${cog}°`);
                     }
-                    tbody.appendChild(row);
-                });
-            } catch (err) {
-                console.error("Ошибка автообновления:", err);
-            }
+                } else {
+                    row.innerHTML = `
+                        <td><b>${item.mmsi}</b></td>
+                        <td class="status-waiting">WAITING</td>
+                        <td>—</td><td>—</td><td>—</td><td>—</td>
+                    `;
+                }
+                tbody.appendChild(row);
+            });
+        } catch (err) {
+            console.error("Ошибка запроса:", err);
         }
+    }
 
-        async function searchVessel() {
-            const mmsi = document.getElementById('mmsiInput').value.trim();
-            const resultDiv = document.getElementById('searchResult');
+    async function searchVessel() {
+        const mmsi = document.getElementById('mmsiInput').value.trim();
+        const resultDiv = document.getElementById('searchResult');
+        if (!mmsi) return;
 
-            if (!mmsi) return alert("Введите MMSI");
+        resultDiv.innerHTML = "<p>Поиск...</p>";
 
-            resultDiv.innerHTML = "<p>Поиск...</p>";
+        try {
+            const res = await fetch(`${API_BASE_URL}/search/${mmsi}`);
+            const data = await res.json();
 
-            try {
-                const res = await fetch(`${API_BASE_URL}/search/${mmsi}`);
-                const data = await res.json();
-                
-                resultDiv.innerHTML = `
-                    <div class="result-box">
-                        <b>Источник: ${data.source}</b><br><br>
-                        ${JSON.stringify(data.data, null, 2)}
-                    </div>
-                `;
-            } catch (err) {
-                resultDiv.innerHTML = `<p style="color:red;">Ошибка поиска: ${err.message}</p>`;
+            if (data.data && data.data.lat && data.data.lon) {
+                // Если нашлись координаты, смещаем карту на найденное судно
+                map.setView([data.data.lat, data.data.lon], 9);
+                L.marker([data.data.lat, data.data.lon]).addTo(map)
+                    .bindPopup(`<b>Найденное судно MMSI: ${mmsi}</b>`).openPopup();
             }
-        }
 
-        // Обновлять таблицу каждые 3 секунды
-        setInterval(updateFavorites, 3000);
-        updateFavorites();
-    </script>
+            resultDiv.innerHTML = `
+                <div class="result-box">
+                    <b>Источник: ${data.source}</b><br>
+                    ${JSON.stringify(data.data, null, 2)}
+                </div>
+            `;
+        } catch (err) {
+            resultDiv.innerHTML = `<p style="color:red;">Ошибка поиска: ${err.message}</p>`;
+        }
+    }
+
+    setInterval(fetchFavorites, 3000);
+    fetchFavorites();
+</script>
 </body>
 </html>
