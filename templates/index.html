@@ -3,59 +3,61 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AIS Vessel Tracker</title>
+    <title>AIS Vessel Monitoring</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f4f7f6; }
-        h1, h2 { color: #333; }
-        .search-box { margin-bottom: 20px; padding: 15px; background: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        input[type="text"] { padding: 10px; width: 250px; font-size: 16px; }
-        button { padding: 10px 15px; font-size: 16px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
-        button:hover { background-color: #0056b3; }
-        table { width: 100%; border-collapse: collapse; background: #fff; margin-top: 10px; }
-        th, td { padding: 12px; border: 1px solid #ddd; text-align: left; }
-        th { background-color: #007bff; color: white; }
-        .status-online { color: green; font-weight: bold; }
-        .status-waiting { color: orange; font-weight: bold; }
-        .result-card { margin-top: 15px; padding: 15px; background: #e9ecef; border-radius: 6px; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 20px; background-color: #f8f9fa; color: #212529; }
+        .container { max-width: 900px; margin: 0 auto; }
+        .card { background: #ffffff; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin-bottom: 20px; }
+        h1, h2 { margin-top: 0; }
+        .search-form { display: flex; gap: 10px; margin-top: 10px; }
+        input[type="text"] { flex: 1; padding: 12px; border: 1px solid #ced4da; border-radius: 6px; font-size: 16px; }
+        button { padding: 12px 20px; background-color: #0d6efd; color: white; border: none; border-radius: 6px; font-size: 16px; cursor: pointer; }
+        button:hover { background-color: #0b5ed7; }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #dee2e6; }
+        th { background-color: #f1f3f5; font-weight: 600; }
+        .badge-online { background: #d1e7dd; color: #0f5132; padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 14px; }
+        .badge-waiting { background: #fff3cd; color: #664d03; padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 14px; }
+        .result-box { margin-top: 15px; padding: 15px; background: #e9ecef; border-radius: 6px; font-family: monospace; white-space: pre-wrap; word-break: break-all; }
     </style>
 </head>
 <body>
+    <div class="container">
+        <!-- Поиск судна -->
+        <div class="card">
+            <h2>Поиск судна по MMSI</h2>
+            <div class="search-form">
+                <input type="text" id="mmsiInput" placeholder="Введите MMSI">
+                <button onclick="searchVessel()">Найти</button>
+            </div>
+            <div id="searchResult"></div>
+        </div>
 
-    <h1>Мониторинг судов (AIS Tracker)</h1>
-
-    <!-- Форма мгновенного поиска по MMSI -->
-    <div class="search-box">
-        <h2>Поиск судна по MMSI</h2>
-        <input type="text" id="mmsiInput" placeholder="Введите MMSI (например, 220338000)">
-        <button onclick="searchVessel()">Найти</button>
-        <div id="searchResult"></div>
+        <!-- Таблица Мониторинга -->
+        <div class="card">
+            <h2>Избранные суда (Мониторинг 24/7)</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>MMSI</th>
+                        <th>Статус</th>
+                        <th>Широта (Lat)</th>
+                        <th>Долгота (Lon)</th>
+                        <th>Скорость (SOG)</th>
+                        <th>Курс (COG)</th>
+                    </tr>
+                </thead>
+                <tbody id="favoritesTable">
+                    <tr><td colspan="6">Подключение к серверу...</td></tr>
+                </tbody>
+            </table>
+        </div>
     </div>
 
-    <!-- Таблица Избранных судов (Favorites) -->
-    <h2>Избранные суда (Мониторинг 24/7)</h2>
-    <table>
-        <thead>
-            <tr>
-                <th>MMSI</th>
-                <th>Статус</th>
-                <th>Широта (Lat)</th>
-                <th>Долгота (Lon)</th>
-                <th>Скорость (SOG)</th>
-                <th>Курс (COG)</th>
-                <th>Время обн.</th>
-            </tr>
-        </thead>
-        <tbody id="favoritesTable">
-            <tr><td colspan="7">Загрузка данных...</td></tr>
-        </tbody>
-    </table>
-
     <script>
-        // Укажите URL вашего опубликованного сервиса на Render
-        const API_BASE_URL = "https://<your-render-app-name>.onrender.com";
+        const API_BASE_URL = "https://ais-le31.onrender.com";
 
-        // 1. Функция обновления таблицы Favorites
-        async function fetchFavorites() {
+        async function updateFavorites() {
             try {
                 const response = await fetch(`${API_BASE_URL}/favorites`);
                 const data = await response.json();
@@ -69,18 +71,16 @@
                     if (item.status === 'online' && item.data) {
                         row.innerHTML = `
                             <td><b>${item.mmsi}</b></td>
-                            <td class="status-online">Online</td>
+                            <td><span class="badge-online">ONLINE</span></td>
                             <td>${item.data.lat}</td>
                             <td>${item.data.lon}</td>
                             <td>${item.data.sog} kn</td>
                             <td>${item.data.cog}°</td>
-                            <td>${item.data.timestamp || 'Realtime'}</td>
                         `;
                     } else {
                         row.innerHTML = `
                             <td><b>${item.mmsi}</b></td>
-                            <td class="status-waiting">Ожидание AIS...</td>
-                            <td>—</td>
+                            <td><span class="badge-waiting">WAITING</span></td>
                             <td>—</td>
                             <td>—</td>
                             <td>—</td>
@@ -90,45 +90,36 @@
                     tbody.appendChild(row);
                 });
             } catch (err) {
-                console.error("Ошибка при получении Favorites:", err);
+                console.error("Ошибка автообновления:", err);
             }
         }
 
-        // 2. Функция мгновенного REST-поиска по MMSI
         async function searchVessel() {
             const mmsi = document.getElementById('mmsiInput').value.trim();
             const resultDiv = document.getElementById('searchResult');
 
-            if (!mmsi) {
-                alert("Введите MMSI номер");
-                return;
-            }
+            if (!mmsi) return alert("Введите MMSI");
 
-            resultDiv.innerHTML = "<p>Выполняется поиск...</p>";
+            resultDiv.innerHTML = "<p>Поиск...</p>";
 
             try {
-                const response = await fetch(`${API_BASE_URL}/search/${mmsi}`);
-                if (!response.ok) {
-                    throw new Error(`Ошибка сервера: ${response.status}`);
-                }
+                const res = await fetch(`${API_BASE_URL}/search/${mmsi}`);
+                const data = await res.json();
                 
-                const res = await response.json();
-                const vesselData = res.data;
-
                 resultDiv.innerHTML = `
-                    <div class="result-card">
-                        <h3>Результат поиска (Источник: ${res.source})</h3>
-                        <pre>${JSON.stringify(vesselData, null, 2)}</pre>
+                    <div class="result-box">
+                        <b>Источник: ${data.source}</b><br><br>
+                        ${JSON.stringify(data.data, null, 2)}
                     </div>
                 `;
             } catch (err) {
-                resultDiv.innerHTML = `<p style="color: red;">Судно не найдено или произошла ошибка: ${err.message}</p>`;
+                resultDiv.innerHTML = `<p style="color:red;">Ошибка поиска: ${err.message}</p>`;
             }
         }
 
-        // Автообновление списка Избранного каждые 3 секунды
-        setInterval(fetchFavorites, 3000);
-        fetchFavorites();
+        // Обновлять таблицу каждые 3 секунды
+        setInterval(updateFavorites, 3000);
+        updateFavorites();
     </script>
 </body>
 </html>
