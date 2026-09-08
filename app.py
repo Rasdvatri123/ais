@@ -13,7 +13,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("AIS_Backend")
 
 LIVE_CACHE = {}
-FAVORITE_MMSIS = ["220338000", "205404090"]  # Укажите нужные MMSI
+FAVORITE_MMSIS = ["220338000", "205404090"]
 AISSTREAM_KEY = os.getenv("AISSTREAM_API_KEY", "")
 
 HEADERS = {
@@ -55,7 +55,7 @@ async def ais_websocket_listener():
                         }
         except Exception as e:
             logger.error(f"Ошибка WebSocket: {e}. Переподключение через 10 сек...")
-            await asyncio.sleep(10)  # Пауза 10 сек, чтобы избежать ошибки 429
+            await asyncio.sleep(10)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -73,7 +73,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Корневой маршрут - общая информация
+# Корневой маршрут - убирает ошибку "Not Found" на главной странице
 @app.get("/")
 async def root():
     return {
@@ -82,7 +82,7 @@ async def root():
         "favorites_configured": FAVORITE_MMSIS
     }
 
-# Роут 1: Избранное
+# Эндпоинт 1: Избранные суда
 @app.get("/favorites")
 async def get_favorites():
     result = []
@@ -93,7 +93,7 @@ async def get_favorites():
             result.append({"mmsi": mmsi, "status": "waiting_data", "data": None})
     return JSONResponse(content=result)
 
-# Роут 2: Поиск по MMSI
+# Эндпоинт 2: Поиск судна
 @app.get("/search/{mmsi}")
 async def search_vessel(mmsi: str):
     clean_mmsi = str(mmsi).strip()
@@ -111,3 +111,4 @@ async def search_vessel(mmsi: str):
                 return {"source": "rest_api", "status": response.status_code, "data": None}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
+            
