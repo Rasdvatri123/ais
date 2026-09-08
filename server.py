@@ -34,21 +34,20 @@ AISSTREAM_API_KEY = os.environ.get(
 
 
 def fetch_fallback_vessel(query):
-  """Резервный поиск судна через открытый API без Cloudflare блокировок (403)."""
+  """Точечный получение координат судна по MMSI/названию без фоновых блокировок."""
   headers = {
       "User-Agent": (
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
           " (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
       ),
       "Accept": "application/json, text/plain, */*",
-      "Accept-Language": "en-US,en;q=0.9",
   }
 
-  #Источник 1: Public VesselFinder Endpoint
+  # Метод 1: Прямой публичный JSON-эндпоинт
   try:
     url = f"https://www.vesselfinder.com/api/pub/click/{query}"
     req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=5) as response:
+    with urllib.request.urlopen(req, timeout=4) as response:
       data = json.loads(response.read().decode("utf-8"))
       if data and "lat" in data and "lng" in data:
         mmsi = str(data.get("mmsi") or query)
@@ -61,38 +60,33 @@ def fetch_fallback_vessel(query):
             "lon": float(data["lng"]),
             "speed": float(data.get("speed", 0)),
             "course": float(data.get("course", 0)),
-            "status": "Найдено (VesselFinder)",
+            "status": "Найдено (База)",
             "destination": data.get("dest", "Не указано"),
         }
         vessels_data[mmsi] = vessel_info
         logging.info(
-            f"Успешный поиск (VesselFinder): {vessel_info['name']} [{mmsi}] ->"
-            f" [{data['lat']}, {data['lng']}]"
+            f"=== УСПЕШНЫЙ ПОИСК ===: {vessel_info['name']} ({data['lat']},"
+            f" {data['lng']})"
         )
         return vessel_info
   except Exception as e:
-    logging.warning(f"VesselFinder API не ответил для {query}: {e}")
+    logging.warning(f"Источник 1 не ответил: {e}")
 
-  # Источник 2: Открытый REST API AIS-Hub / Datalastic парсинг HTML
+  # Метод 2: Поиск через открытый HTML-парсинг
   try:
     url = f"https://www.vesselfinder.com/vessels/details/{query}"
     req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=5) as response:
+    with urllib.request.urlopen(req, timeout=4) as response:
       html = response.read().decode("utf-8")
-      # Регулярное выражение для поиска координат в карточке
       coords = re.search(
           r'position\s*:\s*\[\s*([-+]?\d+\.\d+)\s*,\s*([-+]?\d+\.\d+)\s*\]', html
       )
-      name_match = re.search(r'<h1 class="title">([^<]+)</h1>', html)
-
       if coords:
         lat, lon = float(coords.group(1)), float(coords.group(2))
-        ship_name = (
-            name_match.group(1).strip() if name_match else f"MMSI: {query}"
-        )
+        mmsi = str(query)
         vessel_info = {
-            "mmsi": str(query),
-            "name": ship_name.upper(),
+            "mmsi": mmsi,
+            "name": f"MMSI: {mmsi}",
             "lat": lat,
             "lon": lon,
             "speed": 0.0,
@@ -100,13 +94,11 @@ def fetch_fallback_vessel(query):
             "status": "Найдено (Web)",
             "destination": "Не указано",
         }
-        vessels_data[str(query)] = vessel_info
-        logging.info(
-            f"Успешный веб-поиск: {ship_name} [{query}] -> [{lat}, {lon}]"
-        )
+        vessels_data[mmsi] = vessel_info
+        logging.info(f"=== УСПЕШНЫЙ ВЕБ-ПОИСК ===: {mmsi} ({lat}, {lon})")
         return vessel_info
   except Exception as e:
-    logging.error(f"Ошибка всех источников поиска для {query}: {e}")
+    logging.error(f"Ошибка всех источников fallback для {query}: {e}")
 
   return None
 
@@ -133,7 +125,7 @@ def set_vessels():
   region_changed = new_region != current_region
   current_region = new_region
 
-  # Выполняем точечный поиск
+  # Выполняем точечный поиск СИНХРОННО, чтобы вернуть найденное судно в первом ответе
   for item in target_vessels:
     existing = next(
         (
@@ -144,9 +136,7 @@ def set_vessels():
         None,
     )
     if not existing:
-      threading.Thread(
-          target=fetch_fallback_vessel, args=(item,), daemon=True
-      ).start()
+      fetch_fallback_vessel(item)
 
   if region_changed and ws_connection and async_loop:
     asyncio.run_coroutine_threadsafe(ws_connection.close(), async_loop)
