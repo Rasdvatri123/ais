@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import threading
 import urllib.request
 from flask import Flask, jsonify, render_template, request
@@ -19,7 +20,6 @@ vessels_data = {}
 target_vessels = []
 
 BOUNDING_BOXES = {
-    # Расширенная Европа с охватом Атлантики
     "europe": [[[25.0, -25.0], [72.0, 45.0]]],
     "world": [[[-90.0, -180.0], [90.0, 180.0]]],
 }
@@ -34,51 +34,79 @@ AISSTREAM_API_KEY = os.environ.get(
 
 
 def fetch_fallback_vessel(query):
-  """Мгновенный точечный поиск судна через публичный API с полными браузерными заголовками."""
+  """Резервный поиск судна через открытый API без Cloudflare блокировок (403)."""
   headers = {
       "User-Agent": (
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-          " (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+          " (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
       ),
-      "Accept": "application/json, text/javascript, */*; q=0.01",
-      "X-Requested-With": "XMLHttpRequest",
-      "Referer": "https://www.myshiptracking.com/",
+      "Accept": "application/json, text/plain, */*",
+      "Accept-Language": "en-US,en;q=0.9",
   }
 
-  url = f"https://www.myshiptracking.com/requests_vessel.php?type=search&term={query}"
-
+  #Источник 1: Public VesselFinder Endpoint
   try:
+    url = f"https://www.vesselfinder.com/api/pub/click/{query}"
     req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=5) as response:
       data = json.loads(response.read().decode("utf-8"))
-      if data and isinstance(data, list) and len(data) > 0:
-        item = data[0]
-        mmsi = str(item.get("mmsi") or item.get("id") or query)
-
-        lat = float(item.get("lat") or item.get("l") or 0)
-        lon = float(item.get("lng") or item.get("lon") or 0)
-
-        if lat != 0 and lon != 0:
-          vessel_info = {
-              "mmsi": mmsi,
-              "name": (
-                  item.get("name") or item.get("n") or f"MMSI: {mmsi}"
-              ).upper(),
-              "lat": lat,
-              "lon": lon,
-              "speed": float(item.get("speed") or item.get("s") or 0),
-              "course": float(item.get("course") or item.get("c") or 0),
-              "status": "Найдено в базе",
-              "destination": item.get("dest") or item.get("d") or "Не указано",
-          }
-          vessels_data[mmsi] = vessel_info
-          logging.info(
-              f"Успешный поиск fallback: {vessel_info['name']} [{mmsi}] ->"
-              f" [{lat}, {lon}]"
-          )
-          return vessel_info
+      if data and "lat" in data and "lng" in data:
+        mmsi = str(data.get("mmsi") or query)
+        vessel_info = {
+            "mmsi": mmsi,
+            "name": str(
+                data.get("name") or data.get("title") or f"MMSI: {mmsi}"
+            ).upper(),
+            "lat": float(data["lat"]),
+            "lon": float(data["lng"]),
+            "speed": float(data.get("speed", 0)),
+            "course": float(data.get("course", 0)),
+            "status": "Найдено (VesselFinder)",
+            "destination": data.get("dest", "Не указано"),
+        }
+        vessels_data[mmsi] = vessel_info
+        logging.info(
+            f"Успешный поиск (VesselFinder): {vessel_info['name']} [{mmsi}] ->"
+            f" [{data['lat']}, {data['lng']}]"
+        )
+        return vessel_info
   except Exception as e:
-    logging.error(f"Сбой точечного поиска для '{query}': {e}")
+    logging.warning(f"VesselFinder API не ответил для {query}: {e}")
+
+  # Источник 2: Открытый REST API AIS-Hub / Datalastic парсинг HTML
+  try:
+    url = f"https://www.vesselfinder.com/vessels/details/{query}"
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=5) as response:
+      html = response.read().decode("utf-8")
+      # Регулярное выражение для поиска координат в карточке
+      coords = re.search(
+          r'position\s*:\s*\[\s*([-+]?\d+\.\d+)\s*,\s*([-+]?\d+\.\d+)\s*\]', html
+      )
+      name_match = re.search(r'<h1 class="title">([^<]+)</h1>', html)
+
+      if coords:
+        lat, lon = float(coords.group(1)), float(coords.group(2))
+        ship_name = (
+            name_match.group(1).strip() if name_match else f"MMSI: {query}"
+        )
+        vessel_info = {
+            "mmsi": str(query),
+            "name": ship_name.upper(),
+            "lat": lat,
+            "lon": lon,
+            "speed": 0.0,
+            "course": 0.0,
+            "status": "Найдено (Web)",
+            "destination": "Не указано",
+        }
+        vessels_data[str(query)] = vessel_info
+        logging.info(
+            f"Успешный веб-поиск: {ship_name} [{query}] -> [{lat}, {lon}]"
+        )
+        return vessel_info
+  except Exception as e:
+    logging.error(f"Ошибка всех источников поиска для {query}: {e}")
 
   return None
 
@@ -105,7 +133,7 @@ def set_vessels():
   region_changed = new_region != current_region
   current_region = new_region
 
-  # Выполняем быстрый поиск для каждого введенного судна/MMSI
+  # Выполняем точечный поиск
   for item in target_vessels:
     existing = next(
         (
@@ -116,7 +144,6 @@ def set_vessels():
         None,
     )
     if not existing:
-      # Запускаем точечный поиск в отдельном потоке, чтобы не блокировать ответ
       threading.Thread(
           target=fetch_fallback_vessel, args=(item,), daemon=True
       ).start()
