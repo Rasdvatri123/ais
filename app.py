@@ -141,6 +141,8 @@ async def serve_ui():
             table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
             th, td { padding: 8px; text-align: left; border-bottom: 1px solid #eee; }
             th { background: #f8f9fa; }
+            .vessel-link { color: #007bff; cursor: pointer; font-weight: bold; text-decoration: underline; }
+            .vessel-link:hover { color: #0056b3; }
             .status-online { color: #198754; font-weight: bold; }
             .status-waiting { color: #fd7e14; font-weight: bold; }
             .result-box { margin-top: 10px; padding: 10px; background: #f8f9fa; border: 1px solid #e9ecef; border-radius: 6px; font-size: 13px; }
@@ -169,6 +171,7 @@ async def serve_ui():
 
         <div class="card">
             <h2>Избранные суда</h2>
+            <small style="color: #666; margin-bottom: 8px; display: block;">Нажмите на имя судна или координаты, чтобы центрировать карту.</small>
             <table>
                 <thead>
                     <tr>
@@ -211,6 +214,13 @@ async def serve_ui():
             }
         }
 
+        function centerMapOnVessel(lat, lon, mmsi) {
+            map.setView([lat, lon], 9);
+            if (markers[mmsi]) {
+                markers[mmsi].openPopup();
+            }
+        }
+
         function renderTable() {
             const tbody = document.getElementById('favoritesTable');
             tbody.innerHTML = '';
@@ -222,9 +232,18 @@ async def serve_ui():
                 if (item.status === 'online' && item.data) {
                     const d = item.data;
                     row.innerHTML = `
-                        <td><b>${d.name || mmsi}</b><br><small style="color:#777">${mmsi}</small></td>
+                        <td>
+                            <span class="vessel-link" onclick="centerMapOnVessel(${d.lat}, ${d.lon}, '${mmsi}')">
+                                ${d.name || mmsi}
+                            </span><br>
+                            <small style="color:#777">${mmsi}</small>
+                        </td>
                         <td class="status-online">ONLINE</td>
-                        <td>${d.lat}, ${d.lon}</td>
+                        <td>
+                            <span class="vessel-link" onclick="centerMapOnVessel(${d.lat}, ${d.lon}, '${mmsi}')">
+                                ${d.lat}, ${d.lon}
+                            </span>
+                        </td>
                         <td>${d.sog} kn / ${d.cog}°</td>
                         <td>${d.destination || 'N/A'}</td>
                         <td><button class="btn-danger" onclick="removeFavorite('${mmsi}')">Удалить</button></td>
@@ -276,7 +295,7 @@ async def serve_ui():
             const resultDiv = document.getElementById('searchResult');
             if (!mmsi) return alert("Введите MMSI");
 
-            resultDiv.innerHTML = "<p>Поиск...</p>";
+            resultDiv.innerHTML = "<p>Поиск и подключение потока AISStream...</p>";
 
             try {
                 const res = await fetch(`/search/${mmsi}`);
@@ -295,14 +314,13 @@ async def serve_ui():
                         </div>
                     `;
                     if (d.lat && d.lon) {
-                        map.setView([d.lat, d.lon], 8);
-                        L.marker([d.lat, d.lon]).addTo(map).bindPopup(`<b>MMSI: ${d.mmsi}</b>`).openPopup();
+                        centerMapOnVessel(d.lat, d.lon, d.mmsi);
                     }
                 } else {
                     resultDiv.innerHTML = `
                         <div class="result-box" style="color:#666;">
-                            Сообщение: ${data.message || 'Судно не найдено во внешних REST API.'}<br><br>
-                            <b>Вы можете добавить MMSI ${mmsi} в Избранное напрямую, чтобы отслеживать его в реальном времени через WebSocket:</b><br><br>
+                            <b>Сообщение:</b> ${data.message || 'Судно в данный момент не передаёт сигналы.'}<br><br>
+                            Вы можете добавить MMSI ${mmsi} в Избранное, чтобы приложение продолжало ожидать его сигналы:<br><br>
                             <button class="btn-success" onclick="addFavorite('${mmsi}')">+ Добавить ${mmsi} в Избранное</button>
                         </div>
                     `;
@@ -324,7 +342,7 @@ async def serve_ui():
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({mmsi: mmsi})
             });
-            document.getElementById('searchResult').innerHTML = `<div class="result-box" style="color:green;">MMSI ${mmsi} успешно добавлен в отслеживание!</div>`;
+            document.getElementById('searchResult').innerHTML = `<div class="result-box" style="color:green;">MMSI ${mmsi} добавлен в Избранное!</div>`;
             fetchFavorites();
         }
 
@@ -378,10 +396,22 @@ async def remove_favorite(payload: dict = Body(...)):
 async def search_vessel(mmsi: str):
     clean_mmsi = str(mmsi).strip()
     
+    # 1. Проверяем локальный кэш
     if clean_mmsi in LIVE_CACHE:
         return {"status": "success", "source": "live_cache", "data": LIVE_CACHE[clean_mmsi]}
 
-    async with httpx.AsyncClient(headers=HEADERS, timeout=5.0, follow_redirects=True) as client:
+    # 2. Подключаем WebSocket к подписке на этот MMSI
+    FAVORITE_MMSIS.add(clean_mmsi)
+    ws_restart_event.set()
+
+    # 3. Ждём прихода пакета в течение 4 секунд
+    for _ in range(8):
+        await asyncio.sleep(0.5)
+        if clean_mmsi in LIVE_CACHE:
+            return {"status": "success", "source": "aisstream_live", "data": LIVE_CACHE[clean_mmsi]}
+
+    # 4. Проверяем сторонний API
+    async with httpx.AsyncClient(headers=HEADERS, timeout=4.0, follow_redirects=True) as client:
         try:
             url = f"https://vessel-location.services.digitraffic.fi/api/v1/vessels/{clean_mmsi}/locations"
             response = await client.get(url)
@@ -392,7 +422,6 @@ async def search_vessel(mmsi: str):
                     coords = latest.get("geometry", {}).get("coordinates", [0, 0])
                     props = latest.get("properties", {})
                     lat, lon = coords[1], coords[0]
-                    
                     if lat and lon:
                         update_vessel_data(
                             mmsi=clean_mmsi,
@@ -405,5 +434,5 @@ async def search_vessel(mmsi: str):
         except Exception:
             pass
 
-    return {"status": "not_found", "source": "none", "message": "Судно не найдено во внешних API"}
-    
+    return {"status": "not_found", "source": "none", "message": "Данные по MMSI пока не поступили в поток."}
+                            
