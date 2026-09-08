@@ -1,5 +1,4 @@
-Flask
-flask-cors
-gunicorn
+fastapi
+uvicorn
+httpx
 websockets
-websocket-client
