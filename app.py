@@ -5,35 +5,32 @@ import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import httpx
 import websockets
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("AIS_Backend")
 
-# Хранилище в памяти
 LIVE_CACHE = {}
-
-FAVORITE_MMSIS = ["220338000", "205404090"]  # Укажите ваши MMSI
+FAVORITE_MMSIS = ["220338000", "205404090"]  # Укажите нужные MMSI
 AISSTREAM_KEY = os.getenv("AISSTREAM_API_KEY", "")
 
-# Реалистичные заголовки для REST Fallback
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
     "Accept": "application/json"
 }
 
 async def ais_websocket_listener():
-    """Фоновый поток для подписки на AISStream"""
     if not AISSTREAM_KEY:
-        logger.warning("AISSTREAM_API_KEY не задан! WebSocket запущен не будет.")
+        logger.warning("AISSTREAM_API_KEY не задан!")
         return
 
     url = "wss://stream.aisstream.io/v0/stream"
     
     while True:
         try:
-            logger.info("Установка WebSocket соединения с AISStream...")
+            logger.info("Подключение к AISStream WebSocket...")
             async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
                 sub_msg = {
                     "APIKey": AISSTREAM_KEY,
@@ -54,23 +51,20 @@ async def ais_websocket_listener():
                             "lat": pos["Latitude"],
                             "lon": pos["Longitude"],
                             "sog": pos.get("Sog", 0),
-                            "cog": pos.get("Cog", 0),
-                            "timestamp": pos.get("Timestamp")
+                            "cog": pos.get("Cog", 0)
                         }
         except Exception as e:
-            logger.error(f"Ошибка WebSocket: {e}. Reconnect через 5 сек...")
-            await asyncio.sleep(5)
+            logger.error(f"Ошибка WebSocket: {e}. Переподключение через 10 сек...")
+            await asyncio.sleep(10)  # Пауза 10 сек, чтобы избежать ошибки 429
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Запуск фонового WebSocket при старте сервера
     task = asyncio.create_task(ais_websocket_listener())
     yield
     task.cancel()
 
 app = FastAPI(lifespan=lifespan)
 
-# Включаем CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -79,11 +73,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Корневой маршрут - общая информация
 @app.get("/")
 async def root():
-    return {"status": "ok", "cached_vessels_count": len(LIVE_CACHE)}
+    return {
+        "status": "online",
+        "cached_vessels": list(LIVE_CACHE.keys()),
+        "favorites_configured": FAVORITE_MMSIS
+    }
 
-# 1. Получение избранных судов
+# Роут 1: Избранное
 @app.get("/favorites")
 async def get_favorites():
     result = []
@@ -92,30 +91,23 @@ async def get_favorites():
             result.append({"mmsi": mmsi, "status": "online", "data": LIVE_CACHE[mmsi]})
         else:
             result.append({"mmsi": mmsi, "status": "waiting_data", "data": None})
-    return result
+    return JSONResponse(content=result)
 
-# 2. Прямой REST поиск судна по MMSI (без ожидания WebSocket)
+# Роут 2: Поиск по MMSI
 @app.get("/search/{mmsi}")
 async def search_vessel(mmsi: str):
-    mmsi = str(mmsi).strip()
+    clean_mmsi = str(mmsi).strip()
     
-    # Если данные уже пришли по WebSocket — отдаем из памяти
-    if mmsi in LIVE_CACHE:
-        return {"source": "cache", "data": LIVE_CACHE[mmsi]}
+    if clean_mmsi in LIVE_CACHE:
+        return {"source": "cache", "data": LIVE_CACHE[clean_mmsi]}
 
-    # Запрос напрямую к публичным REST API
-    async with httpx.AsyncClient(headers=HEADERS, timeout=10.0, follow_redirects=True) as client:
+    async with httpx.AsyncClient(headers=HEADERS, timeout=8.0, follow_redirects=True) as client:
         try:
-            # Публичный эндпоинт для мгновенного поиска по MMSI
-            response = await client.get(f"https://data.hub.ais.org/api/v1/vessel/{mmsi}")
-            
+            url = f"https://data.hub.ais.org/api/v1/vessel/{clean_mmsi}"
+            response = await client.get(url)
             if response.status_code == 200:
-                data = response.json()
-                return {"source": "rest_api", "data": data}
+                return {"source": "rest_api", "data": response.json()}
             else:
-                raise HTTPException(
-                    status_code=response.status_code, 
-                    detail=f"REST API ответил со статусом {response.status_code}"
-                )
-        except httpx.RequestError as exc:
-            raise HTTPException(status_code=502, detail=f"Ошибка соединения с REST API: {exc}")
+                return {"source": "rest_api", "status": response.status_code, "data": None}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
