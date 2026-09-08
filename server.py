@@ -19,6 +19,7 @@ vessels_data = {}
 target_vessels = []
 
 BOUNDING_BOXES = {
+    # Расширенная Европа с охватом Атлантики
     "europe": [[[25.0, -25.0], [72.0, 45.0]]],
     "world": [[[-90.0, -180.0], [90.0, 180.0]]],
 }
@@ -33,34 +34,52 @@ AISSTREAM_API_KEY = os.environ.get(
 
 
 def fetch_fallback_vessel(query):
-  """Мгновенный поиск судна через публичный REST API, если его нет в активном потоке WebSocket."""
-  try:
-    url = f"https://www.myshiptracking.com/requests_vessel.php?type=search&term={query}"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+  """Мгновенный точечный поиск судна через публичный API с полными браузерными заголовками."""
+  headers = {
+      "User-Agent": (
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+          " (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      ),
+      "Accept": "application/json, text/javascript, */*; q=0.01",
+      "X-Requested-With": "XMLHttpRequest",
+      "Referer": "https://www.myshiptracking.com/",
+  }
 
-    with urllib.request.urlopen(req, timeout=4) as response:
-      data = json.loads(response.read().decode())
+  url = f"https://www.myshiptracking.com/requests_vessel.php?type=search&term={query}"
+
+  try:
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=5) as response:
+      data = json.loads(response.read().decode("utf-8"))
       if data and isinstance(data, list) and len(data) > 0:
         item = data[0]
-        mmsi = str(item.get("mmsi") or item.get("id", ""))
-        if mmsi:
+        mmsi = str(item.get("mmsi") or item.get("id") or query)
+
+        lat = float(item.get("lat") or item.get("l") or 0)
+        lon = float(item.get("lng") or item.get("lon") or 0)
+
+        if lat != 0 and lon != 0:
           vessel_info = {
               "mmsi": mmsi,
-              "name": item.get("name", f"MMSI: {mmsi}"),
-              "lat": float(item.get("lat", 0)),
-              "lon": float(item.get("lng", 0)),
-              "speed": float(item.get("speed", 0)),
-              "course": float(item.get("course", 0)),
-              "status": "Из базы (Кэш)",
-              "destination": item.get("dest", "Не указано"),
+              "name": (
+                  item.get("name") or item.get("n") or f"MMSI: {mmsi}"
+              ).upper(),
+              "lat": lat,
+              "lon": lon,
+              "speed": float(item.get("speed") or item.get("s") or 0),
+              "course": float(item.get("course") or item.get("c") or 0),
+              "status": "Найдено в базе",
+              "destination": item.get("dest") or item.get("d") or "Не указано",
           }
           vessels_data[mmsi] = vessel_info
           logging.info(
-              f"Мгновенный поиск нашел судно: {vessel_info['name']} [{mmsi}]"
+              f"Успешный поиск fallback: {vessel_info['name']} [{mmsi}] ->"
+              f" [{lat}, {lon}]"
           )
           return vessel_info
   except Exception as e:
-    logging.debug(f"Ошибка точечного запроса: {e}")
+    logging.error(f"Сбой точечного поиска для '{query}': {e}")
+
   return None
 
 
@@ -86,7 +105,7 @@ def set_vessels():
   region_changed = new_region != current_region
   current_region = new_region
 
-  # Точечный мгновенный поиск для введенных судов
+  # Выполняем быстрый поиск для каждого введенного судна/MMSI
   for item in target_vessels:
     existing = next(
         (
@@ -97,7 +116,10 @@ def set_vessels():
         None,
     )
     if not existing:
-      fetch_fallback_vessel(item)
+      # Запускаем точечный поиск в отдельном потоке, чтобы не блокировать ответ
+      threading.Thread(
+          target=fetch_fallback_vessel, args=(item,), daemon=True
+      ).start()
 
   if region_changed and ws_connection and async_loop:
     asyncio.run_coroutine_threadsafe(ws_connection.close(), async_loop)
@@ -120,6 +142,7 @@ async def ais_stream_loop():
 
   while True:
     try:
+      logging.info("Подключение к живой трансляции AISStream...")
       async with websockets.connect(
           url, ping_interval=20, ping_timeout=20, compression=None
       ) as websocket:
@@ -168,7 +191,9 @@ async def ais_stream_loop():
                 existing = vessels_data.get(mmsi, {})
                 vessels_data[mmsi] = {
                     "mmsi": mmsi,
-                    "name": ship_name or existing.get("name") or f"MMSI: {mmsi}",
+                    "name": (
+                        ship_name or existing.get("name") or f"MMSI: {mmsi}"
+                    ).upper(),
                     "lat": lat,
                     "lon": lon,
                     "speed": pos.get("Sog", existing.get("speed", 0)),
@@ -188,7 +213,7 @@ async def ais_stream_loop():
                 new_name = static.get("Name", "").strip() or ship_name
                 if mmsi in vessels_data:
                   if new_name:
-                    vessels_data[mmsi]["name"] = new_name
+                    vessels_data[mmsi]["name"] = new_name.upper()
                   vessels_data[mmsi]["destination"] = static.get(
                       "Destination", vessels_data[mmsi]["destination"]
                   )
@@ -196,7 +221,8 @@ async def ais_stream_loop():
           except Exception:
             pass
 
-    except Exception:
+    except Exception as e:
+      logging.error(f"Переподключение к AISStream через 5 сек: {e}")
       await asyncio.sleep(5)
 
 
