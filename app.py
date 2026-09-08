@@ -12,9 +12,7 @@ import websockets
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("AIS_Backend")
 
-# Кэш текущих координат и метаданных
 LIVE_CACHE = {} 
-# История точек для треков: { "mmsi": [[lat, lon], [lat, lon], ...] }
 TRACKS_CACHE = {} 
 FAVORITE_MMSIS = {"220338000", "205404090"}
 AISSTREAM_KEY = os.getenv("AISSTREAM_API_KEY", "")
@@ -41,7 +39,6 @@ def update_vessel_data(mmsi: str, lat: float, lon: float, sog: float = 0, cog: f
     if eta != "N/A": LIVE_CACHE[mmsi]["eta"] = eta
     if name: LIVE_CACHE[mmsi]["name"] = name
 
-    # Обновление трека
     if mmsi not in TRACKS_CACHE:
         TRACKS_CACHE[mmsi] = []
     
@@ -133,14 +130,14 @@ async def serve_ui():
             .card { background: #fff; padding: 16px; border-radius: 10px; box-shadow: 0 2px 6px rgba(0,0,0,0.06); }
             h2 { margin-top: 0; font-size: 1.1rem; color: #1a1a1a; }
             #map { height: 380px; width: 100%; border-radius: 8px; }
-            .search-form { display: flex; gap: 8px; }
-            input[type="text"] { flex: 1; padding: 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px; }
+            .search-form { display: flex; gap: 8px; flex-wrap: wrap; }
+            input[type="text"] { flex: 1; min-width: 180px; padding: 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px; }
             button { padding: 10px 16px; background: #007bff; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; }
             button:hover { background: #0056b3; }
+            .btn-success { background: #198754; }
+            .btn-success:hover { background: #157347; }
             .btn-danger { background: #dc3545; padding: 4px 8px; font-size: 12px; }
             .btn-danger:hover { background: #bb2d3b; }
-            .btn-success { background: #198754; padding: 4px 8px; font-size: 12px; }
-            .btn-success:hover { background: #157347; }
             table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
             th, td { padding: 8px; text-align: left; border-bottom: 1px solid #eee; }
             th { background: #f8f9fa; }
@@ -153,10 +150,11 @@ async def serve_ui():
     <body>
     <div class="layout">
         <div class="card">
-            <h2>Поиск судна по MMSI</h2>
+            <h2>Поиск и добавление судна по MMSI</h2>
             <div class="search-form">
-                <input type="text" id="mmsiInput" placeholder="Введите MMSI (например, 220338000)">
+                <input type="text" id="mmsiInput" placeholder="Введите MMSI (например, 250005913)">
                 <button onclick="searchVessel()">Найти</button>
+                <button class="btn-success" onclick="addCurrentInputToFavorites()">+ Добавить в Избранное</button>
             </div>
             <div id="searchResult"></div>
         </div>
@@ -251,7 +249,6 @@ async def serve_ui():
                 if (item.status === 'online' && item.data) {
                     const d = item.data;
                     
-                    // Обновление/создание маркера
                     if (markers[mmsi]) {
                         markers[mmsi].setLatLng([d.lat, d.lon]);
                     } else {
@@ -259,7 +256,6 @@ async def serve_ui():
                             .bindPopup(`<b>${d.name || mmsi}</b><br>MMSI: ${mmsi}<br>Назначение: ${d.destination || 'N/A'}<br>Скорость: ${d.sog} kn`);
                     }
 
-                    // Обновление/создание линии трека
                     const trackPoints = globalTracks[mmsi] || [];
                     if (showTracks && trackPoints.length > 1) {
                         if (polylines[mmsi]) {
@@ -278,7 +274,7 @@ async def serve_ui():
         async function searchVessel() {
             const mmsi = document.getElementById('mmsiInput').value.trim();
             const resultDiv = document.getElementById('searchResult');
-            if (!mmsi) return;
+            if (!mmsi) return alert("Введите MMSI");
 
             resultDiv.innerHTML = "<p>Поиск...</p>";
 
@@ -303,11 +299,23 @@ async def serve_ui():
                         L.marker([d.lat, d.lon]).addTo(map).bindPopup(`<b>MMSI: ${d.mmsi}</b>`).openPopup();
                     }
                 } else {
-                    resultDiv.innerHTML = `<div class="result-box" style="color:red;">Сообщение: ${data.message || 'Судно не найдено'}</div>`;
+                    resultDiv.innerHTML = `
+                        <div class="result-box" style="color:#666;">
+                            Сообщение: ${data.message || 'Судно не найдено во внешних REST API.'}<br><br>
+                            <b>Вы можете добавить MMSI ${mmsi} в Избранное напрямую, чтобы отслеживать его в реальном времени через WebSocket:</b><br><br>
+                            <button class="btn-success" onclick="addFavorite('${mmsi}')">+ Добавить ${mmsi} в Избранное</button>
+                        </div>
+                    `;
                 }
             } catch (err) {
                 resultDiv.innerHTML = `<div class="result-box" style="color:red;">Ошибка поиска: ${err.message}</div>`;
             }
+        }
+
+        function addCurrentInputToFavorites() {
+            const mmsi = document.getElementById('mmsiInput').value.trim();
+            if (!mmsi) return alert("Введите MMSI");
+            addFavorite(mmsi);
         }
 
         async function addFavorite(mmsi) {
@@ -316,6 +324,7 @@ async def serve_ui():
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({mmsi: mmsi})
             });
+            document.getElementById('searchResult').innerHTML = `<div class="result-box" style="color:green;">MMSI ${mmsi} успешно добавлен в отслеживание!</div>`;
             fetchFavorites();
         }
 
@@ -372,27 +381,29 @@ async def search_vessel(mmsi: str):
     if clean_mmsi in LIVE_CACHE:
         return {"status": "success", "source": "live_cache", "data": LIVE_CACHE[clean_mmsi]}
 
-    async with httpx.AsyncClient(headers=HEADERS, timeout=8.0, follow_redirects=True) as client:
+    async with httpx.AsyncClient(headers=HEADERS, timeout=5.0, follow_redirects=True) as client:
         try:
-            url = f"https://data.hub.ais.org/api/v1/vessel/{clean_mmsi}"
+            url = f"https://vessel-location.services.digitraffic.fi/api/v1/vessels/{clean_mmsi}/locations"
             response = await client.get(url)
             if response.status_code == 200:
-                raw_data = response.json()
-                lat = raw_data.get("lat") or raw_data.get("latitude")
-                lon = raw_data.get("lon") or raw_data.get("longitude")
-                
-                if lat is not None and lon is not None:
-                    update_vessel_data(
-                        mmsi=clean_mmsi,
-                        lat=float(lat),
-                        lon=float(lon),
-                        sog=float(raw_data.get("speed", 0) or raw_data.get("sog", 0)),
-                        cog=float(raw_data.get("course", 0) or raw_data.get("cog", 0)),
-                        destination=raw_data.get("destination", "N/A")
-                    )
-                    return {"status": "success", "source": "hub_ais_api", "data": LIVE_CACHE[clean_mmsi]}
-            
-            return {"status": "not_found", "source": "hub_ais_api", "message": "Судно не найдено или нет координат"}
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
-            
+                raw = response.json()
+                if isinstance(raw, list) and len(raw) > 0:
+                    latest = raw[-1]
+                    coords = latest.get("geometry", {}).get("coordinates", [0, 0])
+                    props = latest.get("properties", {})
+                    lat, lon = coords[1], coords[0]
+                    
+                    if lat and lon:
+                        update_vessel_data(
+                            mmsi=clean_mmsi,
+                            lat=float(lat),
+                            lon=float(lon),
+                            sog=float(props.get("sog", 0)),
+                            cog=float(props.get("cog", 0))
+                        )
+                        return {"status": "success", "source": "digitraffic_api", "data": LIVE_CACHE[clean_mmsi]}
+        except Exception:
+            pass
+
+    return {"status": "not_found", "source": "none", "message": "Судно не найдено во внешних API"}
+    
