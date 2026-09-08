@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 import threading
 import urllib.request
 from flask import Flask, jsonify, render_template, request
@@ -19,12 +18,17 @@ CORS(app)
 vessels_data = {}
 target_vessels = []
 
+# Глобальные зоны отслеживания для AISStream
 BOUNDING_BOXES = {
-    "europe": [[[25.0, -25.0], [72.0, 45.0]]],
-    "world": [[[-90.0, -180.0], [90.0, 180.0]]],
+    "europe": [
+        [[30.0, -30.0], [72.0, 45.0]]  # Вся Европа, Средиземное и Черное моря
+    ],
+    "world": [
+        [[-90.0, -180.0], [90.0, 180.0]]  # Весь мир
+    ],
 }
 
-current_region = "europe"
+current_region = "world"  # По умолчанию включаем весь мир
 ws_connection = None
 async_loop = None
 
@@ -34,7 +38,16 @@ AISSTREAM_API_KEY = os.environ.get(
 
 
 def fetch_fallback_vessel(query):
-  """Точечный получение координат судна по MMSI/названию без фоновых блокировок."""
+  """Точечный запрос через открытые публичные JSON эндпоинты."""
+  query_str = str(query).strip().lower()
+  logging.info(f"--- Начат точечный поиск для: '{query_str}' ---")
+
+  # 1. Попытка получить данные через открытый публичный API MarineTraffic/Vessel API
+  urls = [
+      f"https://www.vesselfinder.com/api/pub/click/{query_str}",
+      f"https://marinetraffic.com/en/ais/details/ships/mmsi:{query_str}",
+  ]
+
   headers = {
       "User-Agent": (
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -43,63 +56,34 @@ def fetch_fallback_vessel(query):
       "Accept": "application/json, text/plain, */*",
   }
 
-  # Метод 1: Прямой публичный JSON-эндпоинт
-  try:
-    url = f"https://www.vesselfinder.com/api/pub/click/{query}"
-    req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=4) as response:
-      data = json.loads(response.read().decode("utf-8"))
-      if data and "lat" in data and "lng" in data:
-        mmsi = str(data.get("mmsi") or query)
-        vessel_info = {
-            "mmsi": mmsi,
-            "name": str(
-                data.get("name") or data.get("title") or f"MMSI: {mmsi}"
-            ).upper(),
-            "lat": float(data["lat"]),
-            "lon": float(data["lng"]),
-            "speed": float(data.get("speed", 0)),
-            "course": float(data.get("course", 0)),
-            "status": "Найдено (База)",
-            "destination": data.get("dest", "Не указано"),
-        }
-        vessels_data[mmsi] = vessel_info
-        logging.info(
-            f"=== УСПЕШНЫЙ ПОИСК ===: {vessel_info['name']} ({data['lat']},"
-            f" {data['lng']})"
-        )
-        return vessel_info
-  except Exception as e:
-    logging.warning(f"Источник 1 не ответил: {e}")
+  for url in urls:
+    try:
+      req = urllib.request.Request(url, headers=headers)
+      with urllib.request.urlopen(req, timeout=4) as response:
+        res_text = response.read().decode("utf-8")
+        if res_text.startswith("{"):
+          data = json.loads(res_text)
+          if data and "lat" in data and "lng" in data:
+            mmsi = str(data.get("mmsi") or query_str)
+            vessel_info = {
+                "mmsi": mmsi,
+                "name": str(
+                    data.get("name") or data.get("title") or f"MMSI: {mmsi}"
+                ).upper(),
+                "lat": float(data["lat"]),
+                "lon": float(data["lng"]),
+                "speed": float(data.get("speed", 0)),
+                "course": float(data.get("course", 0)),
+                "status": "Найдено (API)",
+                "destination": data.get("dest", "Не указано"),
+            }
+            vessels_data[mmsi] = vessel_info
+            logging.info(f"УСПЕХ ПОИСКА: {vessel_info['name']} ({mmsi})")
+            return vessel_info
+    except Exception as e:
+      logging.warning(f"Ошибка запроса к {url}: {e}")
 
-  # Метод 2: Поиск через открытый HTML-парсинг
-  try:
-    url = f"https://www.vesselfinder.com/vessels/details/{query}"
-    req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=4) as response:
-      html = response.read().decode("utf-8")
-      coords = re.search(
-          r'position\s*:\s*\[\s*([-+]?\d+\.\d+)\s*,\s*([-+]?\d+\.\d+)\s*\]', html
-      )
-      if coords:
-        lat, lon = float(coords.group(1)), float(coords.group(2))
-        mmsi = str(query)
-        vessel_info = {
-            "mmsi": mmsi,
-            "name": f"MMSI: {mmsi}",
-            "lat": lat,
-            "lon": lon,
-            "speed": 0.0,
-            "course": 0.0,
-            "status": "Найдено (Web)",
-            "destination": "Не указано",
-        }
-        vessels_data[mmsi] = vessel_info
-        logging.info(f"=== УСПЕШНЫЙ ВЕБ-ПОИСК ===: {mmsi} ({lat}, {lon})")
-        return vessel_info
-  except Exception as e:
-    logging.error(f"Ошибка всех источников fallback для {query}: {e}")
-
+  logging.warning(f"Точечный поиск не дал результатов для {query_str}")
   return None
 
 
@@ -120,12 +104,13 @@ def set_vessels():
   target_vessels = [
       str(v).lower().strip() for v in raw_vessels if str(v).strip()
   ]
+  logging.info(f"Обновлен список отслеживания: {target_vessels}")
 
-  new_region = data.get("region", "europe")
+  new_region = data.get("region", "world")
   region_changed = new_region != current_region
   current_region = new_region
 
-  # Выполняем точечный поиск СИНХРОННО, чтобы вернуть найденное судно в первом ответе
+  # Выполняем точечный поиск для введенных судов
   for item in target_vessels:
     existing = next(
         (
@@ -159,7 +144,10 @@ async def ais_stream_loop():
 
   while True:
     try:
-      logging.info("Подключение к живой трансляции AISStream...")
+      logging.info(
+          "Подключение к AISStream WebSocket (Зона:"
+          f" {current_region.upper()})..."
+      )
       async with websockets.connect(
           url, ping_interval=20, ping_timeout=20, compression=None
       ) as websocket:
@@ -168,7 +156,7 @@ async def ais_stream_loop():
         subscribe_msg = {
             "APIKey": AISSTREAM_API_KEY,
             "BoundingBoxes": BOUNDING_BOXES.get(
-                current_region, BOUNDING_BOXES["europe"]
+                current_region, BOUNDING_BOXES["world"]
             ),
             "FilterMessageTypes": ["PositionReport", "ShipStaticData"],
         }
@@ -179,6 +167,7 @@ async def ais_stream_loop():
           try:
             msg = json.loads(message)
             if "error" in msg or "Error" in msg:
+              logging.error(f"AISStream ошибка: {msg}")
               continue
 
             msg_type = msg.get("MessageType")
@@ -193,6 +182,7 @@ async def ais_stream_loop():
 
             ship_name = meta.get("ShipName", "").strip()
 
+            # Если список пуст — принимаем всё, если заполнено — только совпадения
             is_match = not target_vessels or any(
                 v == mmsi or (ship_name and v in ship_name.lower())
                 for v in target_vessels
@@ -224,6 +214,10 @@ async def ais_stream_loop():
                         existing.get("destination", "Не указано"),
                     ),
                 }
+                logging.info(
+                    f"AISStream ПОЛУЧЕНО СУДНО: {vessels_data[mmsi]['name']}"
+                    f" [{mmsi}] -> ({lat}, {lon})"
+                )
 
               elif msg_type == "ShipStaticData":
                 static = msg["Message"]["ShipStaticData"]
@@ -239,7 +233,7 @@ async def ais_stream_loop():
             pass
 
     except Exception as e:
-      logging.error(f"Переподключение к AISStream через 5 сек: {e}")
+      logging.error(f"Переподключение к AISStream: {e}")
       await asyncio.sleep(5)
 
 
